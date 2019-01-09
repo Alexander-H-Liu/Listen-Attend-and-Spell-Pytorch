@@ -1,0 +1,41 @@
+asr_model:
+  optimizer: 
+    type: 'Adadelta'                          # Optimizer used for training (adam)
+    learning_rate: 1.0                        # Learning rate for opt
+    joint_ctc: 0.5                            # Weight for joint CTC training (0:disabled CTC, 1:only CTC) 
+
+  encoder:                                    ########## Encoder
+    enc_type: 'BiRNN'                         # Encoder type (RNN: Normal RNN encoder /BiRNN: Bidirection)
+    sample_rate: '1_2_2_1_1'                  # Sample rate between layers (reduce time dimension)
+    sample_style: 'drop'                      # Sample by drop (dropping frame) or concat (concatenating them)
+    dim: '320_320_320_320_320'                # Dimension of each hidden layer
+    dropout: '0_0_0_0_0'                      # Dropout between each hidden layer
+    rnn_cell: 'LSTM'                          # RNN cell used in encoder, should be implemented in Pytorch
+  attention:                                  ########## Attention : http://www.aclweb.org/anthology/D15-1166 section 3.1 for more details
+    att_mode: 'loc'                           # Attention mode (dot/loc)
+    dim: 300                                  # The dimension of attention layer, only works when proj==True
+    proj: True                                # Use a single layer to project encoded feature
+    num_head: 1                               # Number of heads for multi-head attention (UNTESTED)
+  decoder:
+    dim: 320
+    layer: 2
+    dropout: 0.0
+    rnn_cell: 'LSTMCell'
+
+trainer:
+  # Source
+  dataset: 'librispeech'                      # 
+  data_path: 'data/libri_fbank80_subword5000' # Source data path
+  train_set: ['train-clean-100']              #
+  dev_set: ['dev-clean']                      #
+  batch_size: 16                              # training batch size
+  dev_batch_size: 16                             
+  n_jobs: 8                                   # Subprocess used for torch Dataloader
+  max_timestep: 3000                          # Max length for audio feature (0 for no restriction)
+  max_label_len: 400                          # Max length for output sequence (0 for no restriction)
+  apex: True                                  # Use APEX (see https://github.com/NVIDIA/apex for more details)
+  total_steps: 2000000                        # total steps for training                         
+  tf_start: 1.0                               # teacher forcing rate during training will be linearly
+  tf_end: 1.0                                 # decaying from upperbound to lower bound for each epoch
+  valid_step: 1000
+  valid_metric: 'sub_wer'
