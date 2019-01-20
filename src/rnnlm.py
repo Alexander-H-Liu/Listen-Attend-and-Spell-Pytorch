@@ -83,7 +83,7 @@ Training
 """
 def train(paras, config):
     model_para = config['model_para']
-    writer = SummaryWriter()
+    writer = SummaryWriter(paras.log_dir)
     if not os.path.isdir(paras.save_dir):
         os.makedirs(paras.save_dir)
     dl, out_dim = get_loader(paras.csv_file, paras.batch_size, paras.num_workers)
@@ -120,6 +120,7 @@ if __name__ == "__main__":
     parser.add_argument('--num_workers', type=int, default=1)
     parser.add_argument('--n_epochs', type=int, default=50)
     parser.add_argument('--save_dir', type=str, default='save')
+    parser.add_argument('--log_dir', type=str, default='log')
 
     paras = parser.parse_args()
     config = yaml.load(open(paras.config,'r'))['asr_model']['rnn_lm']
