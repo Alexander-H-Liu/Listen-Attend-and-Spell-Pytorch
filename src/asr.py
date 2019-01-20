@@ -1,3 +1,4 @@
+import os
 import torch 
 import random
 import torch.nn as nn
@@ -8,6 +9,9 @@ from torch.distributions.categorical import Categorical
 #from util.functions import CreateOnehotVariable
 import numpy as np
 import math
+
+from src.postprocess import Output
+from src.rnnlm import RNN_LM
 
 # Seq2Seq model
 class Seq2Seq(nn.Module):
@@ -21,6 +25,7 @@ class Seq2Seq(nn.Module):
 
         self.joint_ctc = model_para['optimizer']['joint_ctc']>0
         self.joint_att = model_para['optimizer']['joint_ctc']<1
+        self.joint_lm  = model_para['rnn_lm']['joint_lm']>0
 
         # Encoder
         self.encoder = Listener(example_input.shape[-1],**model_para['encoder'])
@@ -42,11 +47,75 @@ class Seq2Seq(nn.Module):
             self.ctc_weight =  model_para['optimizer']['joint_ctc']
             self.ctc_layer = nn.Linear(enc_out_dim,output_dim)
 
+        # RNNLM
+        if self.joint_lm:
+            self.lm_weight = model_para['rnn_lm']['joint_lm']
+            lm_para = torch.load(os.path.join(model_para['rnn_lm']['save_dir'], 'lm.pt'))
+            self.rnn_lm = RNN_LM(out_dim=lm_para['out.weight'].size(0), **model_para['rnn_lm']['model_para']) #TODO: out_dim
+            self.rnn_lm.load_state_dict(lm_para)
+
         self.init_parameters()
     
     def clear_att(self):
         self.attention.reset_enc_mem()
                  
+    def beam_decode(self, audio_feature, decode_step, state_len, beam_size=20, n_best=1):
+        assert audio_feature.shape[0] == 1
+        assert self.training == False
+        # Encode
+        encode_feature,encode_len = self.encoder(audio_feature,state_len)
+
+        ctc_output = None
+        att_output = None
+        att_maps = None
+
+        # CTC based decoding
+        if self.joint_ctc:
+            ctc_output = self.ctc_layer(encode_feature)
+
+        # Attention based decoding
+        if self.joint_att:
+            # Init (init char = <SOS>, reset all rnn state and cell)
+            self.decoder.init_rnn(encode_feature)
+            self.attention.reset_enc_mem()
+            last_char = self.embed(torch.zeros((1),dtype=torch.long).to(next(self.decoder.parameters()).device))
+            last_char_idx = torch.LongTensor([[0]])
+            # beam search init
+            final_outputs, prev_top_outputs, next_top_outputs = [], [], []
+            prev_top_outputs.append(Output(self.decoder.hidden_state, last_char, None))
+        
+            # Decode
+            for t in range(decode_step):
+                for output in prev_top_outputs:
+                    # LAS
+                    last_char = output.last_char
+                    self.decoder.hidden_state = output.decoder_state
+                    attention_score,context = self.attention(self.decoder.state_list[0],encode_feature,encode_len)
+                    decoder_input = torch.cat([last_char,context],dim=-1)
+                    dec_out = self.decoder(decoder_input)
+                    cur_char = self.char_trans(dec_out)
+
+                    # RNN-LM
+                    if self.joint_lm:
+                        last_char_idx = output.last_char_idx.to(next(self.rnn_lm.parameters()).device)
+                        lm_hidden, lm_output = self.rnn_lm(last_char_idx, [1], output.lm_state)
+                        cur_char = self.lm_weight * lm_output.squeeze(0) + (1-self.lm_weight) * cur_char
+
+                    # Beam search
+                    topv, topi = F.softmax(cur_char, dim=-1).topk(beam_size)
+                    final, top = output.addTopk(topi, topv, self.decoder.hidden_state, lm_hidden, self.embed, beam_size) #TODO lm_hidden go with self.joint_lm
+                    if final:
+                        final_outputs.append(final)
+                    next_top_outputs.extend(top)
+
+                next_top_outputs.sort(key=lambda o: o.avgScore(), reverse=True)
+                prev_top_outputs = next_top_outputs[:beam_size]
+                next_top_outputs = []
+
+            final_outputs += prev_top_outputs
+            final_outputs.sort(key=lambda o: o.avgScore(), reverse=True)
+
+        return final_outputs[:n_best]
 
     def forward(self, audio_feature, decode_step,tf_rate=0.0,teacher=None,state_len=None):
         bs = audio_feature.shape[0]
@@ -218,6 +287,16 @@ class Speller(nn.Module):
     def init_rnn(self,context):
         self.state_list = [torch.zeros(context.shape[0],self.dim).to(context.device)]*self.layer
         self.cell_list = [torch.zeros(context.shape[0],self.dim).to(context.device)]*self.layer
+
+    @property
+    def hidden_state(self):
+        return [s.clone().detach().cpu() for s in self.state_list], [c.clone().detach().cpu() for c in self.cell_list]
+
+    @hidden_state.setter
+    def hidden_state(self, state): # state is a tuple of two list
+        device = self.state_list[0].device
+        self.state_list = [s.to(device) for s in state[0]]
+        self.cell_list = [c.to(device) for c in state[1]]
     
     def forward(self, input_context):
         self.state_list[0],self.cell_list[0] = self.layer0(self.dropout(input_context),(self.state_list[0],self.cell_list[0]))

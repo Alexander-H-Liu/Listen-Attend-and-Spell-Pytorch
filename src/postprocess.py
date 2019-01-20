@@ -26,7 +26,49 @@ class Mapper():
             pred = [collapse_phn(p) for p in pred]
         return pred
 
+class Output:
+    def __init__(self, decoder_state, last_char, lm_state, output_seq=[], output_scores=[]):
+        assert len(output_seq) == len(output_scores)
+        # attention decoder
+        self.decoder_state = decoder_state
+        self.last_char = last_char
+        # RNN language model
+        self.lm_state = lm_state
+        # Previous outputs
+        self.output_seq = output_seq
+        self.output_scores = output_scores
 
+    def avgScore(self):
+        assert len(self.output_scores) != 0
+        return sum(self.output_scores) / len(self.output_scores)
+
+    def addTopk(self, topi, topv, decoder_state, lm_state, emb, beam_size):
+        topv = torch.log(topv)
+        outputs = []
+        term_score = None
+        for i in range(beam_size):
+            if topi[0][i].item() == 1:
+                term_score = topv[0][i].cpu()
+                continue
+            idxes = self.output_seq[:] # pass by value
+            scores = self.output_scores[:] # pass by value
+            idxes.append(topi[0][i].cpu())
+            scores.append(topv[0][i].cpu()) #TODO: add CTC score
+            outputs.append(Output(decoder_state, emb(torch.tensor(topi[0][i])).unsqueeze(0), lm_state, idxes, scores))
+        if term_score:
+            self.output_seq.append(torch.tensor(1))
+            self.output_scores.append(term_score)
+            return self, outputs
+        return None, outputs
+
+    @property
+    def outIndex(self):
+        return [i.item() for i in self.output_seq]
+
+    @property
+    def last_char_idx(self):
+        idx = self.output_seq[-1] if len(self.output_seq) != 0 else 0
+        return torch.LongTensor([[idx]])
 
 def cal_acc(pred,label):
     pred = np.argmax(pred.cpu().detach(),axis=-1)
@@ -42,8 +84,9 @@ def cal_acc(pred,label):
         accs.append(correct/total_char)
     return sum(accs)/len(accs)
 
-def cal_cer(pred,label,metric,mapper,get_sentence=False):
-    pred = np.argmax(pred.cpu().detach(),axis=-1)
+def cal_cer(pred,label,metric,mapper,get_sentence=False, argmax=True):
+    if argmax:
+        pred = np.argmax(pred.cpu().detach(),axis=-1)
     label = label.cpu()
     pred = mapper.idx2word(pred,metric)
     label = mapper.idx2word(label,metric)

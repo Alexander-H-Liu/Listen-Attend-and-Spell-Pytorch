@@ -3,6 +3,7 @@ import torch
 import math
 import numpy as np
 from tensorboardX import SummaryWriter
+from tqdm import tqdm
 import torch.nn.functional as F
 from src.asr import Seq2Seq
 from src.dataset import LoadDataset
@@ -50,6 +51,7 @@ class Trainer():
         print('[INFO] Loading data from ',self.config['trainer']['data_path'])
         setattr(self,'train_set',LoadDataset('train',use_gpu=self.paras.gpu,**self.config['trainer']))
         setattr(self,'dev_set',LoadDataset('dev',use_gpu=self.paras.gpu,**self.config['trainer']))
+        setattr(self,'test_set',LoadDataset('test',use_gpu=self.paras.gpu,**self.config['trainer']))
         for self.sample_x,_ in getattr(self,'train_set'):break
         if len(self.sample_x.shape)==4: self.sample_x=self.sample_x[0]
 
@@ -61,6 +63,8 @@ class Trainer():
         self.seq_loss = torch.nn.CrossEntropyLoss(ignore_index=0, reduction='none').to(self.device)#, reduction='none')
         self.ctc_loss = torch.nn.CTCLoss(blank=0, reduction='mean')
         self.ctc_weight = self.config['asr_model']['optimizer']['joint_ctc']
+        if self.paras.load:
+            self.asr_model.load_state_dict(torch.load(self.paras.load))
 
         # optimizer
         if self.apex and self.config['asr_model']['optimizer']['type']=='Adam':
@@ -215,16 +219,51 @@ class Trainer():
             if val_acc/val_len > self.best_val_acc:
                 self.best_val_acc = val_acc/val_len
                 print('Best val acc      : {:.4f}       @ step {}'.format(self.best_val_acc,self.step))
-                torch.save(self.asr_model, os.path.join(self.ckpdir,self.exp_name+'_asr_acc.model'))
+                torch.save(self.asr_model.state_dict(), os.path.join(self.ckpdir,self.exp_name+'_asr_acc.model'))
 
             # checkpoint by val er.
             if val_cer/val_len  < self.best_val_ed:
                 self.best_val_ed = val_cer/val_len
                 print('Best val er       : {:.4f}       @ step {}'.format(self.best_val_ed,self.step))
-                torch.save(self.asr_model, os.path.join(self.ckpdir,self.exp_name+'_asr_er.model'))
+                torch.save(self.asr_model.state_dict(), os.path.join(self.ckpdir,self.exp_name+'_asr_er.model'))
                 # Save hyps.
                 with open(os.path.join(self.ckpdir,self.exp_name+'_hyp.txt'),'w') as f:
                     for t1,t2 in zip(all_pred,all_true):
                         f.write(t1+','+t2+'\n')
 
         self.asr_model.train()
+
+    def inference(self):
+        '''Perform inference step with beam search attention decoding.'''
+        self.asr_model.eval()
+
+        test_cer = 0.0
+        all_pred, all_true = [], []
+        print('Start testing with beam decode...')
+
+        for cur_b, (x,y) in enumerate(tqdm(self.test_set)):
+            # Prepare data
+            if len(x.shape)==4: x = x.squeeze(0)
+            if len(y.shape)==3: y = y.squeeze(0)
+            x = x.to(device = self.device,dtype=torch.float32)
+            y = y.to(device = self.device,dtype=torch.long)
+            state_len = torch.sum(torch.sum(x.cpu(),dim=-1)!=0,dim=-1)
+            state_len = [int(sl) for sl in state_len]
+            ans_len = int(torch.max(torch.sum(y!=0,dim=-1)))
+            
+            # Forward
+            with torch.no_grad():
+                output = self.asr_model.beam_decode(x, ans_len+VAL_STEP, state_len, 20)
+
+            label = y[:,1:ans_len+1].contiguous()
+            att_pred = output[0].outIndex
+            att_pred = torch.LongTensor(att_pred).unsqueeze(0).to(self.device)
+            t1, t2 = cal_cer(att_pred, label, metric=self.valid_metric, mapper=self.mapper, get_sentence=True, argmax=False)
+            all_pred += t1
+            all_true += t2
+            test_cer += cal_cer(att_pred, label, metric=self.valid_metric, mapper=self.mapper, argmax=False)*int(x.shape[0])
+            # for o in output:
+                # print("score: {:.4f} -- {}".format(o.avgScore(), o.outIndex))
+
+        test_len = len(self.test_set.dataset))
+        print('Test cer:', (test_cer/test_len))

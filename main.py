@@ -20,13 +20,12 @@ parser.add_argument('--config', type=str, help='Path to experiment config.')
 parser.add_argument('--name', default=None, type=str, help='Name for logging.')
 parser.add_argument('--logdir', default='log/', type=str, help='Logging path.', required=False)
 parser.add_argument('--ckpdir', default='checkpoint/', type=str, help='Checkpoint path.', required=False)
-#parser.add_argument('--load', default=None, type=str, help='Load pre-trained model', required=False)
+parser.add_argument('--load', default=None, type=str, help='Load pre-trained model', required=False)
 parser.add_argument('--seed', default=531, type=int, help='Random seed for reproducable results.', required=False)
-parser.add_argument('--gpu', default=True, type=bool, help='Enable GPU training.', required=False)
+parser.add_argument('--gpu', action='store_true', help='Enable GPU training.')
 parser.add_argument('--dev_set', default='test', type=str, help='Specify Develop set.', required=False)
+parser.add_argument('--test', action='store_true', help='Test the model.')
 paras = parser.parse_args()
-
-
 
 config = yaml.load(open(paras.config,'r'))
 
@@ -42,10 +41,7 @@ trainer.load_data()
 
 trainer.set_model()
 
-
-trainer.train()
-
-
-
-
-
+if not paras.test:
+    trainer.train()
+else:
+    trainer.inference()

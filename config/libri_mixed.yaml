@@ -22,6 +22,17 @@ asr_model:
     dropout: 0.0
     rnn_cell: 'LSTMCell'
 
+  rnn_lm:
+    joint_lm: 0.5                             # Weight for joint RNNLM decoding (0:disabled RNNLM, 1:only RNNLM)
+    save_dir: 'save'
+    learning_rate: 0.01
+    model_para:
+      emb_dim: 256
+      h_dim: 800
+      layers: 1
+      rnn: 'LSTM'
+      dropout_rate: 0.0
+
 trainer:
   # Source
   dataset: 'librispeech'                      # 
