@@ -265,5 +265,5 @@ class Trainer():
             # for o in output:
                 # print("score: {:.4f} -- {}".format(o.avgScore(), o.outIndex))
 
-        test_len = len(self.test_set.dataset))
+        test_len = len(self.test_set.dataset)
         print('Test cer:', (test_cer/test_len))

@@ -83,9 +83,9 @@ Training
 """
 def train(paras, config):
     model_para = config['model_para']
-    writer = SummaryWriter(paras.log_dir)
-    if not os.path.isdir(paras.save_dir):
-        os.makedirs(paras.save_dir)
+    writer = SummaryWriter(os.path.join(paras.log_dir), 'RNN-LM')
+    if not os.path.isdir(config['save_dir']):
+        os.makedirs(config['save_dir'])
     dl, out_dim = get_loader(paras.csv_file, paras.batch_size, paras.num_workers)
     lm = RNN_LM(model_para['emb_dim'], model_para['h_dim'], out_dim, model_para['layers'], 
                 model_para['rnn'], model_para['dropout_rate'])
@@ -94,7 +94,7 @@ def train(paras, config):
     best_loss = 9e10
     for epoch in range(paras.n_epochs):
         print('===============  Epoch: {}  ==============='.format(epoch))
-        print_loss = 0
+        print_loss = 0 
         for input_seq, lens, target in tqdm(dl):
             input_seq = input_seq.to(device)
             target = target.to(device)
@@ -103,13 +103,15 @@ def train(paras, config):
             opt.zero_grad()
             loss.backward()
             opt.step()
-            print_loss += loss.item()
+            print_loss += loss
         print_loss = print_loss/len(dl.dataset)/paras.batch_size
         if print_loss < best_loss:
             best_loss = print_loss
             torch.save(lm.state_dict(), os.path.join(config['save_dir'], 'lm.pt'))
-        print('training loss: ', print_loss)
+        print('training loss: {:.5f}'.format(print_loss.item()))
+        print('perplexity:    {:.5f}'.format(torch.exp(print_loss).item()))
         writer.add_scalar('loss', print_loss, epoch)
+        writer.add_scalar('perplexity', torch.exp(print_loss).item(), epoch)
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
@@ -119,7 +121,6 @@ if __name__ == "__main__":
     parser.add_argument('--batch_size', type=int, default=64)
     parser.add_argument('--num_workers', type=int, default=1)
     parser.add_argument('--n_epochs', type=int, default=50)
-    parser.add_argument('--save_dir', type=str, default='save')
     parser.add_argument('--log_dir', type=str, default='log')
 
     paras = parser.parse_args()
