@@ -116,36 +116,30 @@ class LibriDataset(Dataset):
         return len(self.Y)
 
 
-def LoadDataset(split,data_path, batch_size, max_timestep, max_label_len, use_gpu, n_jobs,
-                dataset, train_set, dev_set, dev_batch_size,**kwargs):
+def LoadDataset(split, text_only, data_path, batch_size, max_timestep, max_label_len, use_gpu, n_jobs,
+                dataset, train_set, dev_set, test_set, dev_batch_size,**kwargs):
     if split=='train':
         bs = batch_size
         shuffle = True
         sets = train_set
         drop_too_long = True
-        text_only = False
     elif split=='dev':
         bs = dev_batch_size
         shuffle = False
         sets = dev_set
         drop_too_long = True
-        text_only = False
     elif split=='test':
         bs = 1
         shuffle = False
-        sets = dev_set
-        drop_too_long = True
-        text_only = False
+        sets = test_set
+        drop_too_long = False
     elif split=='text':
         bs = batch_size
         shuffle = True
         sets = train_set
-        text_only = True
         drop_too_long = True
     else:
-        shuffle = False
-        sets = test_set
-        drop_too_long = True
+        raise NotImplementedError
         
     if dataset.upper() == "TIMIT":
         assert not text_only,'TIMIT does not support text only.'

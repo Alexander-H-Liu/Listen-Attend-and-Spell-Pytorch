@@ -6,66 +6,74 @@ from tensorboardX import SummaryWriter
 from tqdm import tqdm
 import torch.nn.functional as F
 from src.asr import Seq2Seq
+from src.rnnlm import RNN_LM,CLM_wrapper
 from src.dataset import LoadDataset
 from src.postprocess import Mapper,cal_acc,cal_cer,draw_att
 
 VAL_STEP = 30    # Additional Inference Timesteps to run during validation (to calculate CER)
-DEBUG_STEP = 250 # steps for debugging info.
-GRAD_CLIP = 3
+TRAIN_WER_STEP = 250 # steps for debugging info.
+GRAD_CLIP = 5
 
-class Trainer():
+class Solver():
     def __init__(self,config,paras):
-        
         # General Settings
         self.config = config
         self.paras = paras
         self.device = torch.device('cuda') if (self.paras.gpu and torch.cuda.is_available()) else torch.device('cpu')
 
-        # Logger Settings
         self.exp_name = paras.name
         if self.exp_name is None:
             self.exp_name = '_'.join([paras.config.split('/')[-1].replace('.yaml',''),'sd'+str(paras.seed)])
-        self.logdir = os.path.join(paras.logdir,self.exp_name)
-        self.ckpdir = paras.ckpdir
         if not os.path.exists(paras.ckpdir):os.makedirs(paras.ckpdir)
+        self.ckpdir = os.path.join(paras.ckpdir,self.exp_name)
+        if not os.path.exists(self.ckpdir):os.makedirs(self.ckpdir)
+
+        self.mapper = Mapper(config['solver']['data_path'])
+
+    def verbose(self,msg):
+        print('[INFO]',msg)
+    def progress(self,msg):
+        print(msg+'                              ',end='\r')
+
+
+class Trainer(Solver):
+    def __init__(self,config,paras):
+        super(Trainer, self).__init__(config,paras)
+        # Logger Settings
+        self.logdir = os.path.join(paras.logdir,self.exp_name)
         self.log = SummaryWriter(self.logdir)
-        self.valid_step = config['trainer']['valid_step']
-        self.valid_metric = config['trainer']['valid_metric']
-        self.best_val_acc = 0.0
+        self.valid_step = config['solver']['dev_step']
+        self.valid_metric = config['solver']['dev_metric']
         self.best_val_ed = 2.0
 
         # training details
         self.step = 0
-        self.max_step = config['trainer']['total_steps']
-        self.tf_start = config['trainer']['tf_start']
-        self.tf_end = config['trainer']['tf_end']
-        self.apex = config['trainer']['apex']
+        self.max_step = config['solver']['total_steps']
+        self.tf_start = config['solver']['tf_start']
+        self.tf_end = config['solver']['tf_end']
+        self.apex = config['solver']['apex']
 
-        self.mapper = Mapper(config['trainer']['data_path'])
-
-
-
+        # CLM
+        self.apply_clm = config['clm']['enable']
 
     def load_data(self):
         ''' Load training / dev set'''
-        print('[INFO] Loading data from ',self.config['trainer']['data_path'])
-        setattr(self,'train_set',LoadDataset('train',use_gpu=self.paras.gpu,**self.config['trainer']))
-        setattr(self,'dev_set',LoadDataset('dev',use_gpu=self.paras.gpu,**self.config['trainer']))
-        setattr(self,'test_set',LoadDataset('test',use_gpu=self.paras.gpu,**self.config['trainer']))
+        self.verbose('Loading data from '+self.config['solver']['data_path'])
+        setattr(self,'train_set',LoadDataset('train',text_only=False,use_gpu=self.paras.gpu,**self.config['solver']))
+        setattr(self,'dev_set',LoadDataset('dev',text_only=False,use_gpu=self.paras.gpu,**self.config['solver']))
         for self.sample_x,_ in getattr(self,'train_set'):break
         if len(self.sample_x.shape)==4: self.sample_x=self.sample_x[0]
 
     def set_model(self):
         ''' Setup ASR / CLM (if enabled)'''
-        print('[INFO] Init ASR model, note that Error Rate computed at validation step is Attention decoder with greedy decoding.')
-        self.asr_model = Seq2Seq(self.sample_x,self.mapper.get_dim(),self.config['asr_model'])
-        self.asr_model.to(self.device)
+        self.verbose('Init ASR model, note that Error Rate computed at validation step is Attention decoder with greedy decoding.')
+        self.asr_model = Seq2Seq(self.sample_x,self.mapper.get_dim(),self.config['asr_model']).to(self.device)
         self.seq_loss = torch.nn.CrossEntropyLoss(ignore_index=0, reduction='none').to(self.device)#, reduction='none')
         self.ctc_loss = torch.nn.CTCLoss(blank=0, reduction='mean')
         self.ctc_weight = self.config['asr_model']['optimizer']['joint_ctc']
         if self.paras.load:
-            self.asr_model.load_state_dict(torch.load(self.paras.load))
-
+            raise NotImplementedError
+            
         # optimizer
         if self.apex and self.config['asr_model']['optimizer']['type']=='Adam':
             import apex
@@ -74,14 +82,23 @@ class Trainer():
             self.asr_opt = getattr(torch.optim,self.config['asr_model']['optimizer']['type'])
             self.asr_opt = self.asr_opt(self.asr_model.parameters(), lr=self.config['asr_model']['optimizer']['learning_rate'],eps=1e-8)
 
+        # CLM
+        if self.apply_clm:
+            self.clm = CLM_wrapper(self.mapper.get_dim(), self.config['clm']).to(self.device)
+            clm_data_config = self.config['solver']
+            clm_data_config['train_set'] = self.config['clm']['source']
+            clm_data_config['use_gpu'] = self.paras.gpu
+            self.clm.load_text(clm_data_config)
+            self.verbose('CLM is enabled with text-only source: '+clm_data_config['train_set'])
+            self.verbose('Extra text set total '+len(self.clm.train_set),'batches.')
 
-    def train(self):
+    def exec(self):
         ''' Training End-to-end ASR system'''
-        print('[INFO] Training set total',len(self.train_set),'batches.')
+        self.verbose('Training set total '+str(len(self.train_set))+' batches.')
 
         while self.step< self.max_step:
             for x,y in self.train_set:
-                print('Training step -',self.step,'                              ',end='\r')
+                self.progress('Training step - '+str(self.step))
                 
                 # Perform teacher forcing rate decaying
                 tf_rate = self.tf_start - self.step*(self.tf_start-self.tf_end)/self.max_step
@@ -118,13 +135,22 @@ class Trainer():
                 
                 asr_loss = (1-self.ctc_weight)*att_loss+self.ctc_weight*ctc_loss
                 loss_log['train_full'] = asr_loss
-
                 
+                # CLM step
+                if self.apply_clm:
+                    if (self.step%self.clm.update_freq)==0:
+                        # train CLM
+                        clm_log,gp = self.clm.train(att_pred.detach())
+                        self.write_log('clm_score',clm_log)
+                        self.write_log('clm_gp',gp)
+                    adv_feedback = self.clm.compute_loss(F.softmax(att_pred))
+                    asr_loss -= adv_feedback
+
                 # Backprop
                 asr_loss.backward()
                 grad_norm = torch.nn.utils.clip_grad_norm_(self.asr_model.parameters(), GRAD_CLIP)
                 if math.isnan(grad_norm):
-                    print('Error - grad norm is NaN @ step',self.step)
+                    self.verbose('Error : grad norm is NaN @ step '+str(self.step))
                 else:
                     self.asr_opt.step()
                 
@@ -132,7 +158,7 @@ class Trainer():
                 self.write_log('loss',loss_log)
                 if self.ctc_weight<1:
                     self.write_log('acc',{'train':cal_acc(att_pred,label)})
-                if self.step % DEBUG_STEP ==0:
+                if self.step % TRAIN_WER_STEP ==0:
                     self.write_log(self.valid_metric,{'train':cal_cer(att_pred,label,metric=self.valid_metric,mapper=self.mapper)})
 
                 # Validation
@@ -163,7 +189,7 @@ class Trainer():
         all_pred,all_true = [],[]
 
         for cur_b,(x,y) in enumerate(self.dev_set):
-            print('Valid step -',self.step,'(',cur_b,'/',len(self.dev_set),')',end='\r')
+            self.progress(' '.join(['Valid step -',str(self.step),'(',str(cur_b),'/',str(len(self.dev_set)),')']))
 
             # Prepare data
             if len(x.shape)==4: x = x.squeeze(0)
@@ -213,33 +239,51 @@ class Trainer():
             for idx,attmap in enumerate(val_attmap):
                 self.write_log('att_'+str(idx),attmap)
                 self.write_log('hyp_'+str(idx),val_hyp[idx])
-                self.write_log('txt_'+str(idx),val_txt[idx])        
-
-            # checkpoint by val acc.
-            if val_acc/val_len > self.best_val_acc:
-                self.best_val_acc = val_acc/val_len
-                print('Best val acc      : {:.4f}       @ step {}'.format(self.best_val_acc,self.step))
-                torch.save(self.asr_model.state_dict(), os.path.join(self.ckpdir,self.exp_name+'_asr_acc.model'))
+                self.write_log('txt_'+str(idx),val_txt[idx])
 
             # checkpoint by val er.
             if val_cer/val_len  < self.best_val_ed:
                 self.best_val_ed = val_cer/val_len
-                print('Best val er       : {:.4f}       @ step {}'.format(self.best_val_ed,self.step))
-                torch.save(self.asr_model.state_dict(), os.path.join(self.ckpdir,self.exp_name+'_asr_er.model'))
+                self.verbose('Best val er       : {:.4f}       @ step {}'.format(self.best_val_ed,self.step))
+                torch.save(self.asr_model, os.path.join(self.ckpdir,'asr'))
+                if self.apply_clm:
+                    torch.save(self.clm.clm,  os.path.join(self.ckpdir,'clm'))
                 # Save hyps.
-                with open(os.path.join(self.ckpdir,self.exp_name+'_hyp.txt'),'w') as f:
+                with open(os.path.join(self.ckpdir,'best_hyp.txt'),'w') as f:
                     for t1,t2 in zip(all_pred,all_true):
                         f.write(t1+','+t2+'\n')
 
         self.asr_model.train()
 
-    def inference(self):
+
+class Tester(Solver):
+    def __init__(self,config,paras):
+        super(Tester, self).__init__(config,paras)
+
+
+    def load_data(self):
+        ''' Load test set'''
+        self.verbose('Loading testing data '+str(self.config['solver']['test_set'])+' from '+self.config['solver']['data_path'])
+        self.verbose('During decoding, batch size is set to 1 to perform beam decoding.')
+        setattr(self,'test_set',LoadDataset('test',text_only=False,use_gpu=self.paras.gpu,**self.config['solver']))
+
+    def set_model(self):
+        ''' Setup ASR '''
+        self.verbose('Load ASR model from'+os.path.join(self.ckpdir))
+        self.asr_model = torch.load(os.path.join(self.ckpdir,'asr'))
+        self.decode_lm = self.config['solver']['decode_lm_weight'] >0
+        if self.decode_lm:
+            assert os.path.exists(self.config['solver']['decode_lm_path']), 'Please specify RNNLM path.'
+            self.verbose('Joint RNNLM decoding is enabled, load RNNLM from '+self.config['solver']['decode_lm_path'])
+            self.asr_model.load_lm(**self.config['solver'])
+
+    def exec(self):
         '''Perform inference step with beam search attention decoding.'''
         self.asr_model.eval()
 
         test_cer = 0.0
         all_pred, all_true = [], []
-        print('Start testing with beam decode...')
+        self.verbose('Start testing with beam decode, beam size = '+str(self.config['solver']['decode_beam_size']))
 
         for cur_b, (x,y) in enumerate(tqdm(self.test_set)):
             # Prepare data
@@ -266,4 +310,97 @@ class Trainer():
                 # print("score: {:.4f} -- {}".format(o.avgScore(), o.outIndex))
 
         test_len = len(self.test_set.dataset)
-        print('Test cer:', (test_cer/test_len))
+        self.verbose('Test cer:', (test_cer/test_len))
+
+
+class RNNLM_Trainer(Solver):
+    def __init__(self, config, paras):
+        super(RNNLM_Trainer, self).__init__(config,paras)
+        # Logger Settings
+        self.logdir = os.path.join(paras.logdir,self.exp_name)
+        self.log = SummaryWriter(self.logdir)
+        self.valid_step = config['solver']['dev_step']
+        self.valid_metric = config['solver']['dev_metric']
+        self.best_dev_ppx = 1000
+
+        # training details
+        self.step = 0
+        self.max_step = config['solver']['total_steps']
+        self.apex = config['solver']['apex']
+
+    def load_data(self):
+        ''' Load training / dev set'''
+        self.verbose('Loading text data from ',self.config['solver']['data_path'])
+        setattr(self,'train_set',LoadDataset('train',text_only=True,use_gpu=self.paras.gpu,**self.config['solver']))
+        setattr(self,'dev_set',LoadDataset('dev',text_only=True,use_gpu=self.paras.gpu,**self.config['solver']))
+
+    def set_model(self):
+        ''' Setup RNNLM'''
+        self.verbose('Init RNNLM model.')
+        self.rnnlm = RNN_LM(out_dim=self.mapper.get_dim(),**self.config['rnn_lm']['model_para'])
+        self.rnnlm = self.rnnlm.to(self.device)
+
+        if self.paras.load:
+            raise NotImplementedError
+
+        # optimizer
+        if self.apex and self.config['rnn_lm']['optimizer']['type']=='Adam':
+            import apex
+            self.rnnlm_opt = apex.optimizers.FusedAdam(self.rnnlm.parameters(), lr=self.config['rnn_lm']['optimizer']['learning_rate'])
+        else:
+            self.rnnlm_opt = getattr(torch.optim,self.config['rnn_lm']['optimizer']['type'])
+            self.rnnlm_opt = self.rnnlm_opt(self.rnnlm.parameters(), lr=self.config['rnn_lm']['optimizer']['learning_rate'],eps=1e-8)
+
+    def exec(self):
+        ''' Training RNN-LM'''
+        self.verbose('RNN-LM Training set total '+str(len(self.train_set))+' batches.')
+
+        while self.step < self.max_step:
+            for y in self.train_set:
+                self.progress('Training step - '+str(self.step))
+                # Load data
+                if len(y.shape)==3: y = y.squeeze(0)
+                y = y.to(device = self.device,dtype=torch.long)
+                ans_len = torch.sum(y!=0,dim=-1)
+
+                self.rnnlm_opt.zero_grad()
+                _, prob = self.rnnlm(y[:,:-1],ans_len)
+                loss = F.cross_entropy(prob.view(-1,prob.shape[-1]), y[:,1:].contiguous().view(-1), ignore_index=0)
+                loss.backward()
+                self.rnnlm_opt.step()
+
+                # logger
+                ppx = torch.exp(loss.cpu()).item()
+                self.log.add_scalars('perplexity',{'train':ppx},self.step)
+
+                # Next step
+                self.step += 1
+                if self.step % self.valid_step ==0:
+                    self.valid()
+                if self.step > self.max_step:
+                    break
+
+    def valid(self):
+        self.rnnlm.eval()
+
+        dev_ppx = 0.0
+        dev_size = 0 
+
+        for cur_b,y in enumerate(self.dev_set):
+            self.progress(' '.join(['Valid step -',str(self.step),'(',str(cur_b),'/',str(len(self.dev_set)),')']))
+            if len(y.shape)==3: y = y.squeeze(0)
+            y = y.to(device = self.device,dtype=torch.long)
+            ans_len = torch.sum(y!=0,dim=-1)
+            _, prob = self.rnnlm(y[:,:-1],ans_len)
+            loss = F.cross_entropy(prob.view(-1,prob.shape[-1]), y[:,1:].contiguous().view(-1), ignore_index=0)
+            dev_ppx += torch.exp(loss.cpu()).item()*y.shape[0]
+            dev_size += y.shape[0]
+
+        dev_ppx /= dev_size
+        self.log.add_scalars('perplexity',{'dev':dev_ppx},self.step)
+        if dev_ppx < self.best_dev_ppx:
+            self.best_dev_ppx  = dev_ppx
+            self.verbose('Best val ppx      : {:.4f}       @ step {}'.format(self.best_dev_ppx,self.step))
+            torch.save(self.rnnlm,os.path.join(self.ckpdir,'rnnlm'))
+
+        self.rnnlm.train()

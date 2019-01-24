@@ -11,7 +11,6 @@ import numpy as np
 import math
 
 from src.postprocess import Output
-from src.rnnlm import RNN_LM
 
 # Seq2Seq model
 class Seq2Seq(nn.Module):
@@ -22,13 +21,11 @@ class Seq2Seq(nn.Module):
                       *max(1,2*('Bi' in model_para['encoder']['enc_type']))\
                       *max(1,int(model_para['encoder']['sample_rate'].split('_')[-1])*('concat'== model_para['encoder']['sample_style']))
         
-
         self.joint_ctc = model_para['optimizer']['joint_ctc']>0
         self.joint_att = model_para['optimizer']['joint_ctc']<1
-        self.joint_lm  = model_para['rnn_lm']['joint_lm']>0
 
         # Encoder
-        self.encoder = Listener(example_input.shape[-1],**model_para['encoder'])
+        self.encoder = Listener(example_input,**model_para['encoder'])
 
         # Attention based Decoding
         if self.joint_att:
@@ -47,19 +44,19 @@ class Seq2Seq(nn.Module):
             self.ctc_weight =  model_para['optimizer']['joint_ctc']
             self.ctc_layer = nn.Linear(enc_out_dim,output_dim)
 
-        # RNNLM
-        if self.joint_lm:
-            self.lm_weight = model_para['rnn_lm']['joint_lm']
-            lm_para = torch.load(os.path.join(model_para['rnn_lm']['save_dir'], 'lm.pt'))
-            self.rnn_lm = RNN_LM(out_dim=lm_para['out.weight'].size(0), **model_para['rnn_lm']['model_para']) #TODO: out_dim
-            self.rnn_lm.load_state_dict(lm_para)
-
         self.init_parameters()
+
+    def load_lm(self,decode_lm_weight,decode_beam_size,decode_lm_path,**kwargs):
+        # RNNLM
+        self.decode_lm_weight = decode_lm_weight
+        self.decode_beam_size = decode_beam_size
+        if decode_lm_weight>0:
+            self.rnn_lm = torch.load(decode_lm_path)
     
     def clear_att(self):
         self.attention.reset_enc_mem()
                  
-    def beam_decode(self, audio_feature, decode_step, state_len, beam_size=20, n_best=1):
+    def beam_decode(self, audio_feature, decode_step, state_len,  n_best=1):
         assert audio_feature.shape[0] == 1
         assert self.training == False
         # Encode
@@ -96,20 +93,20 @@ class Seq2Seq(nn.Module):
                     cur_char = self.char_trans(dec_out)
 
                     # RNN-LM
-                    if self.joint_lm:
+                    if self.decode_lm_weight>0:
                         last_char_idx = output.last_char_idx.to(next(self.rnn_lm.parameters()).device)
                         lm_hidden, lm_output = self.rnn_lm(last_char_idx, [1], output.lm_state)
-                        cur_char = self.lm_weight * lm_output.squeeze(0) + (1-self.lm_weight) * cur_char
+                        cur_char = self.decode_lm_weight * lm_output.squeeze(0) + (1-self.decode_lm_weight) * cur_char
 
                     # Beam search
-                    topv, topi = F.softmax(cur_char, dim=-1).topk(beam_size)
-                    final, top = output.addTopk(topi, topv, self.decoder.hidden_state, lm_hidden, self.embed, beam_size) #TODO lm_hidden go with self.joint_lm
+                    topv, topi = F.softmax(cur_char, dim=-1).topk(self.decode_beam_size)
+                    final, top = output.addTopk(topi, topv, self.decoder.hidden_state, lm_hidden, self.embed, self.decode_beam_size) #TODO lm_hidden go with self.joint_lm
                     if final:
                         final_outputs.append(final)
                     next_top_outputs.extend(top)
 
                 next_top_outputs.sort(key=lambda o: o.avgScore(), reverse=True)
-                prev_top_outputs = next_top_outputs[:beam_size]
+                prev_top_outputs = next_top_outputs[:self.decode_beam_size]
                 next_top_outputs = []
 
             final_outputs += prev_top_outputs
@@ -221,10 +218,12 @@ class Seq2Seq(nn.Module):
 # Parameters
 #     See config file for more details.
 class Listener(nn.Module):
-    def __init__(self, input_dim, enc_type, sample_rate, sample_style, dim, dropout, rnn_cell):
+    def __init__(self, example_input, enc_type, sample_rate, sample_style, dim, dropout, rnn_cell):
         super(Listener, self).__init__()
         # Setting
+        input_dim = example_input.shape[-1]
         self.enc_type = enc_type
+        self.vgg = False
         self.dims = [int(v) for v in dim.split('_')]
         self.sample_rate = [int(v) for v in sample_rate.split('_')]
         self.dropout = [float(v) for v in dropout.split('_')]
@@ -237,33 +236,40 @@ class Listener(nn.Module):
         assert self.num_layers>=1,'Listener should have at least 1 layer'
 
         # Construct Listener
-        in_dim = input_dim
+        if 'VGG' in enc_type:
+            print('[INFO] VCC Extractor in Encoder is enabled, time subsample rate = 4.')
+            self.vgg = True
+            self.vgg_extractor = VGGExtractor(example_input)
+            input_dim = self.vgg_extractor.out_dim
+
         for l in range(self.num_layers):
             out_dim = self.dims[l]
             sr = self.sample_rate[l]
             drop = self.dropout[l]
 
-            if enc_type == "RNN":
-                setattr(self, 'layer'+str(l), RNNLayer(in_dim,out_dim, sr, rnn_cell=rnn_cell, dropout_rate=drop,
-                                                       bidir=False,sample_style=sample_style))
-            elif enc_type == "BiRNN":
-                setattr(self, 'layer'+str(l), RNNLayer(in_dim,out_dim, sr, rnn_cell=rnn_cell, dropout_rate=drop,
+            
+            if "BiRNN" in enc_type:
+                setattr(self, 'layer'+str(l), RNNLayer(input_dim,out_dim, sr, rnn_cell=rnn_cell, dropout_rate=drop,
                                                        bidir=True,sample_style=sample_style))
+            elif "RNN" in enc_type:
+                setattr(self, 'layer'+str(l), RNNLayer(input_dim,out_dim, sr, rnn_cell=rnn_cell, dropout_rate=drop,
+                                                       bidir=False,sample_style=sample_style))
             else:
                 raise ValueError('Unsupported Encoder Type: '+enc_type)
 
             # RNN ouput dim = default output dim x direction x sample rate
             rnn_out_dim = out_dim*max(1,2*('Bi' in enc_type))*max(1,sr*('concat'== sample_style)) 
             setattr(self, 'proj'+str(l),nn.Linear(rnn_out_dim,rnn_out_dim))
-            in_dim = rnn_out_dim
+            input_dim = rnn_out_dim
 
     
     def forward(self,input_x,enc_len):
+        if self.vgg:
+            input_x,enc_len = self.vgg_extractor(input_x,enc_len)
         for l in range(self.num_layers):
             input_x, _,enc_len = getattr(self,'layer'+str(l))(input_x,state_len=enc_len, pack_input=True)
             input_x = torch.tanh(getattr(self,'proj'+str(l))(input_x))
         return input_x,enc_len
-
 
 # Speller specified in the paper
 class Speller(nn.Module):
@@ -362,7 +368,6 @@ class Attention(nn.Module):
             # Maskout attention score for padded states
             # NOTE: mask MUST have all input > 0 
             self.state_mask = np.zeros((listener_feature.shape[0],listener_feature.shape[1]))
-            #self.state_mask = torch.zeros(,dtype=torch.ByteTensor)
             for idx,sl in enumerate(state_len):
                 self.state_mask[idx,sl:] = 1
             self.state_mask = torch.from_numpy(self.state_mask).type(torch.ByteTensor).to(decoder_state.device)
@@ -451,3 +456,58 @@ class RNNLayer(nn.Module):
         return output,hidden
 
 
+# VGG Extractor
+# See https://arxiv.org/pdf/1706.02737.pdf for detail
+# If VGGextractor is enabled, delta feature should be stack over channel.
+class VGGExtractor(nn.Module):
+    def __init__(self,example_input):
+        super(VGGExtractor, self).__init__()
+        in_channel,freq_dim,out_dim = self.check_dim(example_input)
+        self.in_channel = in_channel
+        self.freq_dim = freq_dim
+        self.out_dim = out_dim
+
+        self.conv1 = nn.Conv2d(in_channel, 64, 3, stride=1, padding=1)
+        self.conv2 = nn.Conv2d(    64, 64, 3, stride=1, padding=1)
+        self.pool1 = nn.MaxPool2d(2, stride=2) # Half-time dimension
+        self.conv3 = nn.Conv2d(    64,128, 3, stride=1, padding=1)
+        self.conv4 = nn.Conv2d(   128,128, 3, stride=1, padding=1)
+        self.pool2 = nn.MaxPool2d(2, stride=2) # Half-time dimension
+
+    def check_dim(self,example_input):
+        d = example_input.shape[-1]
+        if d%13 == 0:
+            # MFCC feature
+            return int(d/13),13,(13//4)*128
+        elif d%40 == 0:
+            # Fbank feature
+            return int(d/40),40,(40//4)*128
+        else:
+            raise ValueError('Acoustic feature dimension for VGG should be 13/26/39(MFCC) or 40/80/120(Fbank) but got '+d)
+
+    def view_input(self,feature,xlen):
+        # drop time
+        xlen = [x//4 for x in xlen]
+        if feature.shape[1]%4 != 0:
+            feature = feature[:,:-(feature.shape[1]%4),:].contiguous()
+        bs,ts,ds = feature.shape
+        # reshape
+        feature = feature.view(bs,ts,self.in_channel,self.freq_dim)
+        feature = feature.transpose(1,2)
+
+        return feature,xlen
+
+    def forward(self,feature,xlen):
+        # Feature shape BSxTxD -> BS x CH(num of delta) x T x D(acoustic feature dim)
+        feature,xlen = self.view_input(feature,xlen)
+        feature = F.relu(self.conv1(feature))
+        feature = F.relu(self.conv2(feature))
+        feature = self.pool1(feature) # BSx64xT/2xD/2
+        feature = F.relu(self.conv3(feature))
+        feature = F.relu(self.conv4(feature))
+        feature = self.pool2(feature) # BSx128xT/4xD/4
+        # BSx128xT/4xD/4 -> BSxT/4x128xD/4
+        feature = feature.transpose(1,2)
+        #  BS x T/4 x 128 x D/4 -> BS x T/4 x 32D
+        feature = feature.contiguous().view(feature.shape[0],feature.shape[1],self.out_dim)
+        return feature,xlen

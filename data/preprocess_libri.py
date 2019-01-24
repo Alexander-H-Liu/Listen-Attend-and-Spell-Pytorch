@@ -45,7 +45,7 @@ def read_text(file,target):
 
 
 # Process data
-sets = ['dev-clean','train-clean-100']#['dev-clean','dev-other','train-clean-100','train-clean-360','train-other-500','test-clean','test-other']
+sets = ['train-clean-100','train-clean-360','train-other-500','dev-clean','dev-other','test-clean','test-other']
 encode_table = None
 output_dir = None
 dim = paras.feature_dim*(1+paras.apply_delta+paras.apply_delta_delta)
@@ -99,14 +99,22 @@ if paras.target == 'subword':
 
     # Make Dict
     encode_table = {'<sos>':0,'<eos>':1}
-    with open(os.path.join(bpe_dir,'bpe.vocab')) as f:
+    with open(os.path.join(bpe_dir,'bpe.vocab'),'r', encoding="utf-8") as f:
         for line in f:
             tok = line.split('\t')[0]
             if tok not in ['<s>','</s>']:
                 encode_table[tok] = len(encode_table)
 
+print('')
+print('Data sets :')
+for idx,s in enumerate(sets):
+    print('\t',idx,':',s)
+tr_set = input('Please enter the index of splits you wish to use preprocess. (seperate with space): ')
+tr_set = [sets[int(t)] for t in tr_set.split(' ')]
+
+
 # Acoustic Feature Extraction & Make Date Table
-for s in sets:
+for s in tr_set:
     print('')
     print('Preprocessing',s,'data...',end='')
     todo = list(Path(os.path.join(paras.data_path,s)).rglob("*.flac"))

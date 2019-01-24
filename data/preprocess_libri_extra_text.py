@@ -16,7 +16,7 @@ parser.add_argument('--output_path',type=str, help='Path to store output csv fil
 #parser.add_argument('--bpe_source', type=str, help='Path to pretrained BPE.')
 parser.add_argument('--target', default='subword', type=str, help='Learning target ( phoneme / char / subword / word )', required=False)
 parser.add_argument('--n_tokens', default=5000, type=int, help='Vocabulary size of target', required=False)
-parser.add_argument('--n_samples', default=160000, type=int, help='Sample a part of txt as training data.', required=False)
+parser.add_argument('--n_samples', default=320000, type=int, help='Sample a part of txt as training data.', required=False)
 paras = parser.parse_args()
 
 
