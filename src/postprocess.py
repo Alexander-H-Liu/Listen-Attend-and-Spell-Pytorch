@@ -27,7 +27,7 @@ class Mapper():
         return pred
 
 class Output:
-    def __init__(self, decoder_state, last_char, lm_state, output_seq=[], output_scores=[]):
+    def __init__(self, decoder_state, last_char, output_seq=[], output_scores=[], lm_state=None):
         assert len(output_seq) == len(output_scores)
         # attention decoder
         self.decoder_state = decoder_state
@@ -42,7 +42,7 @@ class Output:
         assert len(self.output_scores) != 0
         return sum(self.output_scores) / len(self.output_scores)
 
-    def addTopk(self, topi, topv, decoder_state, lm_state, emb, beam_size):
+    def addTopk(self, topi, topv, decoder_state, emb, beam_size, lm_state=None):
         topv = torch.log(topv)
         outputs = []
         term_score = None
@@ -54,7 +54,7 @@ class Output:
             scores = self.output_scores[:] # pass by value
             idxes.append(topi[0][i].cpu())
             scores.append(topv[0][i].cpu()) #TODO: add CTC score
-            outputs.append(Output(decoder_state, emb(torch.tensor(topi[0][i])).unsqueeze(0), lm_state, idxes, scores))
+            outputs.append(Output(decoder_state, emb(torch.tensor(topi[0][i])).unsqueeze(0), idxes, scores, lm_state))
         if term_score:
             self.output_seq.append(torch.tensor(1))
             self.output_scores.append(term_score)

@@ -259,7 +259,7 @@ class Trainer(Solver):
 class Tester(Solver):
     def __init__(self,config,paras):
         super(Tester, self).__init__(config,paras)
-
+        self.valid_metric = config['solver']['dev_metric']
 
     def load_data(self):
         ''' Load test set'''

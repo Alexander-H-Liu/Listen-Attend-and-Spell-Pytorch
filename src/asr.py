@@ -79,7 +79,7 @@ class Seq2Seq(nn.Module):
             last_char_idx = torch.LongTensor([[0]])
             # beam search init
             final_outputs, prev_top_outputs, next_top_outputs = [], [], []
-            prev_top_outputs.append(Output(self.decoder.hidden_state, last_char, None))
+            prev_top_outputs.append(Output(self.decoder.hidden_state, last_char))
         
             # Decode
             for t in range(decode_step):
@@ -91,16 +91,18 @@ class Seq2Seq(nn.Module):
                     decoder_input = torch.cat([last_char,context],dim=-1)
                     dec_out = self.decoder(decoder_input)
                     cur_char = self.char_trans(dec_out)
+                    cur_char = F.softmax(cur_char, dim=-1)
 
                     # RNN-LM
+                    lm_state = None
                     if self.decode_lm_weight>0:
                         last_char_idx = output.last_char_idx.to(next(self.rnn_lm.parameters()).device)
                         lm_hidden, lm_output = self.rnn_lm(last_char_idx, [1], output.lm_state)
-                        cur_char = self.decode_lm_weight * lm_output.squeeze(0) + (1-self.decode_lm_weight) * cur_char
+                        cur_char = self.decode_lm_weight * F.softmax(lm_output.squeeze(0), dim=-1) + (1-self.decode_lm_weight) * cur_char
 
                     # Beam search
                     topv, topi = F.softmax(cur_char, dim=-1).topk(self.decode_beam_size)
-                    final, top = output.addTopk(topi, topv, self.decoder.hidden_state, lm_hidden, self.embed, self.decode_beam_size) #TODO lm_hidden go with self.joint_lm
+                    final, top = output.addTopk(topi, topv, self.decoder.hidden_state, self.embed, self.decode_beam_size, lm_hidden)
                     if final:
                         final_outputs.append(final)
                     next_top_outputs.extend(top)
