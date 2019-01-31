@@ -88,7 +88,8 @@ def encode_target(input_list,table=None,mode='subword',max_idx=500):
                 if mode == "word":
                     tmp.append(2)
                 else:
-                    raise ValueError('OOV error: '+t)
+                    tmp.append(table['<unk>'])
+                    # raise ValueError('OOV error: '+t)
         tmp.append(1)
         output_list.append(tmp)
     return output_list,table
