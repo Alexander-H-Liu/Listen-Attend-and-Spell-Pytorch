@@ -130,6 +130,7 @@ def LoadDataset(split, text_only, data_path, batch_size, max_timestep, max_label
         drop_too_long = True
     elif split=='test':
         bs = 1
+        n_jobs = 1
         shuffle = False
         sets = test_set
         drop_too_long = False

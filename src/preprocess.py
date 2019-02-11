@@ -116,7 +116,7 @@ def zero_padding(x,pad_len):
 #     - new_y      : np.array with shape (len(y),max_len)
 def target_padding(y,max_len):
     if max_len is 0: max_len = max([len(v) for v in y])
-    new_y = np.zeros((len(y),max_len))
+    new_y = np.zeros((len(y),max_len),dtype=int)
     for idx,label_seq in enumerate(y):
         new_y[idx,:len(label_seq)] = np.array(label_seq)
     return new_y

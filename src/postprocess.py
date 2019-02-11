@@ -5,6 +5,7 @@ import numpy as np
 import editdistance as ed
 
 class Mapper():
+    '''Mapper for index2token'''
     def __init__(self,file_path):
         # Find mapping
         with open(os.path.join(file_path,'mapping.pkl'),'rb') as fp:
@@ -14,10 +15,12 @@ class Mapper():
     def get_dim(self):
         return len(self.mapping)
 
-    def translate(self,seq):
+    def translate(self,seq,return_string=False):
         new_seq = []
         for c in seq:
             new_seq.append(self.r_mapping[c])
+        if return_string:
+            new_seq = ''.join(new_seq).replace('<sos>','').replace('<eos>','').replace('▁',' ').lstrip()
         return new_seq
 
     def idx2word(self,seq,metric):
@@ -26,40 +29,69 @@ class Mapper():
             pred = [collapse_phn(p) for p in pred]
         return pred
 
-class Output:
-    def __init__(self, decoder_state, last_char, output_seq=[], output_scores=[], lm_state=None):
+class Hypothesis:
+    '''Hypothesis for beam search decoding.
+       Stores the history of label sequence & score 
+       Stores the previous decoder state, ctc state, ctc score, lm state and attention map (if necessary)'''
+    
+    def __init__(self, decoder_state, emb, output_seq=[], output_scores=[], 
+                 lm_state=None, ctc_state=None,ctc_prob=0.0,att_map=None):
         assert len(output_seq) == len(output_scores)
         # attention decoder
         self.decoder_state = decoder_state
-        self.last_char = last_char
+        self.att_map = att_map
+        
         # RNN language model
         self.lm_state = lm_state
+        
         # Previous outputs
         self.output_seq = output_seq
         self.output_scores = output_scores
+        
+        # CTC decoding
+        self.ctc_state = ctc_state
+        self.ctc_prob = ctc_prob
+        
+        # Embedding layer for last_char
+        self.emb = emb
+        
 
     def avgScore(self):
+        '''Return the averaged log probability of hypothesis'''
         assert len(self.output_scores) != 0
         return sum(self.output_scores) / len(self.output_scores)
 
-    def addTopk(self, topi, topv, decoder_state, emb, beam_size, lm_state=None):
-        topv = torch.log(topv)
-        outputs = []
+    def addTopk(self, topi, topv, decoder_state, att_map=None,
+                lm_state=None, ctc_state=None, ctc_prob=0.0, ctc_candidates=[]):
+        '''Expand current hypothesis with a given beam size'''
+        new_hypothesis = []
         term_score = None
+        ctc_s,ctc_p = None,None
+        beam_size = len(topi[0])
+        
         for i in range(beam_size):
+            # Detect <eos>
             if topi[0][i].item() == 1:
                 term_score = topv[0][i].cpu()
                 continue
-            idxes = self.output_seq[:] # pass by value
+            
+            idxes = self.output_seq[:]     # pass by value
             scores = self.output_scores[:] # pass by value
             idxes.append(topi[0][i].cpu())
-            scores.append(topv[0][i].cpu()) #TODO: add CTC score
-            outputs.append(Output(decoder_state, emb(torch.tensor(topi[0][i])).unsqueeze(0), idxes, scores, lm_state))
-        if term_score:
+            scores.append(topv[0][i].cpu()) 
+            if ctc_state is not None:
+                #idx = topi[0][i].item() #
+                idx = ctc_candidates.index(topi[0][i].item()) #
+                ctc_s = ctc_state[idx,:,:]
+                ctc_p = ctc_prob[idx]
+            new_hypothesis.append(Hypothesis(decoder_state, self.emb,
+                                      output_seq=idxes, output_scores=scores, lm_state=lm_state,
+                                      ctc_state=ctc_s,ctc_prob=ctc_p,att_map=att_map))
+        if term_score is not None:
             self.output_seq.append(torch.tensor(1))
             self.output_scores.append(term_score)
-            return self, outputs
-        return None, outputs
+            return self, new_hypothesis
+        return None, new_hypothesis
 
     @property
     def outIndex(self):
@@ -69,6 +101,10 @@ class Output:
     def last_char_idx(self):
         idx = self.output_seq[-1] if len(self.output_seq) != 0 else 0
         return torch.LongTensor([[idx]])
+    @property
+    def last_char(self):
+        idx = self.output_seq[-1] if len(self.output_seq) != 0 else 0
+        return self.emb(torch.LongTensor([idx]).to(next(self.emb.parameters()).device))
 
 def cal_acc(pred,label):
     pred = np.argmax(pred.cpu().detach(),axis=-1)

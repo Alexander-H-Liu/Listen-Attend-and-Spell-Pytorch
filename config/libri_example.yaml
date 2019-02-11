@@ -58,7 +58,9 @@ solver:
   dev_metric: 'sub_wer'
   # Decoding options
   test_set: ['test-clean']
-  decode_beam_size: 20 
-  decode_lm_path: 'checkpoint/libri_rnnlm100_sd531/rnnlm'
+  max_decode_step_ratio: 0.07
+  decode_beam_size: 20
+  decode_ctc_weight: 0.5
+  decode_lm_path: 'result/libri_rnnlm460_sd0/rnnlm'
   decode_lm_weight: 0.5
 

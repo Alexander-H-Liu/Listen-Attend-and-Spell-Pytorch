@@ -6,20 +6,24 @@ from torch.nn.utils.rnn import pack_padded_sequence,pad_packed_sequence
 import torch.nn.functional as F
 from torch.distributions.categorical import Categorical
 
-#from util.functions import CreateOnehotVariable
 import numpy as np
 import math
 
-from src.postprocess import Output
+from src.postprocess import Hypothesis
+from src.ctc import CTCPrefixScore
 
-# Seq2Seq model
+CTC_BEAM_RATIO = 1.5 # DO NOT CHANGE THIS, MAY CAUSE OOM 
+
+
 class Seq2Seq(nn.Module):
+    ''' Seq2Seq model, including Encoder/Decoder(s)'''
     def __init__(self, example_input, output_dim, model_para):
         super(Seq2Seq, self).__init__()
         # Construct Seq2Seq model
         enc_out_dim = int(model_para['encoder']['dim'].split('_')[-1])\
                       *max(1,2*('Bi' in model_para['encoder']['enc_type']))\
-                      *max(1,int(model_para['encoder']['sample_rate'].split('_')[-1])*('concat'== model_para['encoder']['sample_style']))
+                      *max(1,int(model_para['encoder']['sample_rate'].split('_')[-1])\
+                           *('concat'== model_para['encoder']['sample_style']))
         
         self.joint_ctc = model_para['optimizer']['joint_ctc']>0
         self.joint_att = model_para['optimizer']['joint_ctc']<1
@@ -27,94 +31,29 @@ class Seq2Seq(nn.Module):
         # Encoder
         self.encoder = Listener(example_input,**model_para['encoder'])
 
-        # Attention based Decoding
+        # Attention based Decoder
         if self.joint_att:
             self.dec_dim = model_para['decoder']['dim']
-            # Attention
             self.attention = Attention(enc_out_dim,self.dec_dim,**model_para['attention'])
-            # Decoder
             self.decoder = Speller(enc_out_dim+self.dec_dim, **model_para['decoder'])
             self.embed = nn.Embedding(output_dim, self.dec_dim)
-            # Output layer
             self.char_dim = output_dim
             self.char_trans = nn.Linear(self.dec_dim,self.char_dim)
 
-        # CTC
+        # CTC based Decoder
         if self.joint_ctc:
             self.ctc_weight =  model_para['optimizer']['joint_ctc']
             self.ctc_layer = nn.Linear(enc_out_dim,output_dim)
 
         self.init_parameters()
 
-    def load_lm(self,decode_lm_weight,decode_beam_size,decode_lm_path,**kwargs):
-        # RNNLM
-        self.decode_lm_weight = decode_lm_weight
-        self.decode_beam_size = decode_beam_size
-        if decode_lm_weight>0:
-            self.rnn_lm = torch.load(decode_lm_path)
+    def load_lm(self,decode_lm_weight,decode_lm_path,**kwargs):
+        # Load RNNLM (for inference only)
+        self.rnn_lm = torch.load(decode_lm_path)
+        self.rnn_lm.eval()
     
     def clear_att(self):
         self.attention.reset_enc_mem()
-                 
-    def beam_decode(self, audio_feature, decode_step, state_len,  n_best=1):
-        assert audio_feature.shape[0] == 1
-        assert self.training == False
-        # Encode
-        encode_feature,encode_len = self.encoder(audio_feature,state_len)
-
-        ctc_output = None
-        att_output = None
-        att_maps = None
-
-        # CTC based decoding
-        if self.joint_ctc:
-            ctc_output = self.ctc_layer(encode_feature)
-
-        # Attention based decoding
-        if self.joint_att:
-            # Init (init char = <SOS>, reset all rnn state and cell)
-            self.decoder.init_rnn(encode_feature)
-            self.attention.reset_enc_mem()
-            last_char = self.embed(torch.zeros((1),dtype=torch.long).to(next(self.decoder.parameters()).device))
-            last_char_idx = torch.LongTensor([[0]])
-            # beam search init
-            final_outputs, prev_top_outputs, next_top_outputs = [], [], []
-            prev_top_outputs.append(Output(self.decoder.hidden_state, last_char))
-        
-            # Decode
-            for t in range(decode_step):
-                for output in prev_top_outputs:
-                    # LAS
-                    last_char = output.last_char
-                    self.decoder.hidden_state = output.decoder_state
-                    attention_score,context = self.attention(self.decoder.state_list[0],encode_feature,encode_len)
-                    decoder_input = torch.cat([last_char,context],dim=-1)
-                    dec_out = self.decoder(decoder_input)
-                    cur_char = self.char_trans(dec_out)
-                    cur_char = F.softmax(cur_char, dim=-1)
-
-                    # RNN-LM
-                    lm_state = None
-                    if self.decode_lm_weight>0:
-                        last_char_idx = output.last_char_idx.to(next(self.rnn_lm.parameters()).device)
-                        lm_hidden, lm_output = self.rnn_lm(last_char_idx, [1], output.lm_state)
-                        cur_char = self.decode_lm_weight * F.softmax(lm_output.squeeze(0), dim=-1) + (1-self.decode_lm_weight) * cur_char
-
-                    # Beam search
-                    topv, topi = F.softmax(cur_char, dim=-1).topk(self.decode_beam_size)
-                    final, top = output.addTopk(topi, topv, self.decoder.hidden_state, self.embed, self.decode_beam_size, lm_hidden)
-                    if final:
-                        final_outputs.append(final)
-                    next_top_outputs.extend(top)
-
-                next_top_outputs.sort(key=lambda o: o.avgScore(), reverse=True)
-                prev_top_outputs = next_top_outputs[:self.decode_beam_size]
-                next_top_outputs = []
-
-            final_outputs += prev_top_outputs
-            final_outputs.sort(key=lambda o: o.avgScore(), reverse=True)
-
-        return final_outputs[:n_best]
 
     def forward(self, audio_feature, decode_step,tf_rate=0.0,teacher=None,state_len=None):
         bs = audio_feature.shape[0]
@@ -212,6 +151,108 @@ class Seq2Seq(nn.Module):
             self.embed.weight.data.normal_(0, 1)
             for i in range(self.decoder.layer):
                 set_forget_bias_to_one(getattr(self.decoder,'layer'+str(i)).bias_ih)
+    
+    def beam_decode(self, audio_feature, decode_step, state_len,decode_beam_size):
+        '''beam decode returns top N hyps for each input sequence'''
+        assert audio_feature.shape[0] == 1
+        assert self.training == False
+        self.decode_beam_size = decode_beam_size
+        ctc_beam_size = int(CTC_BEAM_RATIO * self.decode_beam_size)
+        
+        # Encode
+        encode_feature,encode_len = self.encoder(audio_feature,state_len)
+        
+        # Init.
+        cur_device = next(self.decoder.parameters()).device
+        ctc_output = None
+        ctc_state = None
+        ctc_prob = 0.0
+        ctc_candidates = []
+        att_output = None
+        att_maps = None
+        lm_hidden = None
+
+        # CTC based decoding
+        if self.joint_ctc:
+            ctc_output = F.log_softmax(self.ctc_layer(encode_feature),dim=-1)
+            ctc_prefix = CTCPrefixScore(ctc_output)
+            ctc_state = ctc_prefix.init_state()
+
+        # Attention based decoding
+        if self.joint_att:
+            # Store attention map if location-aware
+            store_att = self.attention.mode == 'loc'
+            
+            # Init (init char = <SOS>, reset all rnn state and cell)
+            self.decoder.init_rnn(encode_feature)
+            self.attention.reset_enc_mem()
+            last_char = self.embed(torch.zeros((1),dtype=torch.long).to(cur_device))
+            last_char_idx = torch.LongTensor([[0]])
+            
+            # beam search init
+            final_outputs, prev_top_outputs, next_top_outputs = [], [], []
+            prev_top_outputs.append(Hypothesis(self.decoder.hidden_state, self.embed, output_seq=[], output_scores=[], 
+                                               lm_state=None, ctc_prob=0, ctc_state=ctc_state,
+                                               att_map = None)) # WIERD BUG here if all args. are not passed...
+            # Decode
+            for t in range(decode_step):
+                for prev_output in prev_top_outputs:
+                    
+                    # Attention
+                    self.decoder.hidden_state = prev_output.decoder_state
+                    self.attention.prev_att = None if prev_output.att_map is None else prev_output.att_map.to(cur_device)
+                    attention_score,context = self.attention(self.decoder.state_list[0],encode_feature,encode_len)
+                    decoder_input = torch.cat([prev_output.last_char,context],dim=-1)
+                    dec_out = self.decoder(decoder_input)
+                    cur_char = F.log_softmax(self.char_trans(dec_out), dim=-1)
+
+                    # Perform CTC prefix scoring on limited candidates (else OOM easily)
+                    if self.joint_ctc:
+                        # TODO : Check the performance drop for computing part of candidates only
+                        _, ctc_candidates = cur_char.topk(ctc_beam_size)
+                        candidates = list(ctc_candidates[0].cpu().numpy())
+                        
+                        #ctc_prob, ctc_state = ctc_prefix.full_compute(prev_output.outIndex,prev_output.ctc_state,candidates)
+                        ctc_prob, ctc_state = ctc_prefix.cheap_compute(prev_output.outIndex,prev_output.ctc_state,candidates)
+                        
+                        # TODO : study why ctc_char (slightly) > 0 sometimes
+                        ctc_char = torch.FloatTensor(ctc_prob - prev_output.ctc_prob).to(cur_device)
+                        
+                        # Combine CTC score and Attention score (focus on candidates)
+                        hack_ctc_char = torch.zeros_like(cur_char).data.fill_(-1000000.0)
+                        for idx,char in enumerate(candidates):
+                            hack_ctc_char[0,char] = ctc_char[idx]
+                        cur_char = (1-self.ctc_weight)*cur_char + self.ctc_weight*hack_ctc_char#ctc_char#
+                        cur_char[0,0] = -10000000.0 # Hack to ignore <sos>
+
+                    # Joint RNN-LM decoding
+                    if self.decode_lm_weight>0:
+                        last_char_idx = prev_output.last_char_idx.to(cur_device)
+                        lm_hidden, lm_output = self.rnn_lm(last_char_idx, [1], prev_output.lm_state)
+                        cur_char += self.decode_lm_weight * F.log_softmax(lm_output.squeeze(1), dim=-1)
+
+                    # Beam search
+                    topv, topi = cur_char.topk(self.decode_beam_size)
+                    prev_att_map =  self.attention.prev_att.clone().detach().cpu() if store_att else None 
+                    final, top = prev_output.addTopk(topi, topv, self.decoder.hidden_state, att_map=prev_att_map,
+                                                     lm_state=lm_hidden,ctc_state=ctc_state,ctc_prob=ctc_prob,
+                                                     ctc_candidates=candidates)
+                    # Move complete hyps. out
+                    if final is not None:
+                        final_outputs.append(final)
+                        if self.decode_beam_size ==1:
+                            return final_outputs
+                    next_top_outputs.extend(top)
+                
+                # Sort for top N beams
+                next_top_outputs.sort(key=lambda o: o.avgScore(), reverse=True)
+                prev_top_outputs = next_top_outputs[:self.decode_beam_size]
+                next_top_outputs = []
+            
+            final_outputs += prev_top_outputs
+            final_outputs.sort(key=lambda o: o.avgScore(), reverse=True)
+        
+        return final_outputs[:self.decode_beam_size]
 
 
 
@@ -239,7 +280,6 @@ class Listener(nn.Module):
 
         # Construct Listener
         if 'VGG' in enc_type:
-            print('[INFO] VCC Extractor in Encoder is enabled, time subsample rate = 4.')
             self.vgg = True
             self.vgg_extractor = VGGExtractor(example_input)
             input_dim = self.vgg_extractor.out_dim
@@ -513,3 +553,4 @@ class VGGExtractor(nn.Module):
         #  BS x T/4 x 128 x D/4 -> BS x T/4 x 32D
         feature = feature.contiguous().view(feature.shape[0],feature.shape[1],self.out_dim)
         return feature,xlen
+
