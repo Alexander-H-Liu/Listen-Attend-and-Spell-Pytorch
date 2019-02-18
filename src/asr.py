@@ -161,6 +161,8 @@ class Seq2Seq(nn.Module):
         
         # Encode
         encode_feature,encode_len = self.encoder(audio_feature,state_len)
+        if decode_step==0:
+            decode_step = int(encode_len[0])
         
         # Init.
         cur_device = next(self.decoder.parameters()).device
@@ -168,6 +170,7 @@ class Seq2Seq(nn.Module):
         ctc_state = None
         ctc_prob = 0.0
         ctc_candidates = []
+        candidates = None
         att_output = None
         att_maps = None
         lm_hidden = None

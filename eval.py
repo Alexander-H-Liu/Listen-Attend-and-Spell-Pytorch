@@ -19,3 +19,4 @@ for gt,pd in zip(truth,pred):
 
 print('CER : {:.6f}'.format(sum(cer)/len(cer)))
 print('WER : {:.6f}'.format(sum(wer)/len(wer)))
+print('p.s. for phoneme sequences, WER=Phone Error Rate and CER is meaningless.')

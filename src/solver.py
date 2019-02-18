@@ -56,7 +56,6 @@ class Trainer(Solver):
         self.logdir = os.path.join(paras.logdir,self.exp_name)
         self.log = SummaryWriter(self.logdir)
         self.valid_step = config['solver']['dev_step']
-        self.valid_metric = config['solver']['dev_metric']
         self.best_val_ed = 2.0
 
         # Training details
@@ -112,8 +111,8 @@ class Trainer(Solver):
             clm_data_config['train_set'] = self.config['clm']['source']
             clm_data_config['use_gpu'] = self.paras.gpu
             self.clm.load_text(clm_data_config)
-            self.verbose('CLM is enabled with text-only source: '+clm_data_config['train_set'])
-            self.verbose('Extra text set total '+len(self.clm.train_set),'batches.')
+            self.verbose('CLM is enabled with text-only source: '+str(clm_data_config['train_set']))
+            self.verbose('Extra text set total '+str(len(self.clm.train_set))+' batches.')
 
     def exec(self):
         ''' Training End-to-end ASR system'''
@@ -186,8 +185,8 @@ class Trainer(Solver):
                 if self.ctc_weight<1:
                     self.write_log('acc',{'train':cal_acc(att_pred,label)})
                 if self.step % TRAIN_WER_STEP ==0:
-                    self.write_log(self.valid_metric,
-                                   {'train':cal_cer(att_pred,label,metric=self.valid_metric,mapper=self.mapper)})
+                    self.write_log('error rate',
+                                   {'train':cal_cer(att_pred,label,mapper=self.mapper)})
 
                 # Validation
                 if self.step%self.valid_step == 0:
@@ -241,11 +240,11 @@ class Trainer(Solver):
                            .to(device = self.device,dtype=torch.float32) # Sum each uttr and devide by length
                 seq_loss = torch.mean(seq_loss) # Mean by batch
                 val_att += seq_loss.detach()*int(x.shape[0])
-                t1,t2 = cal_cer(att_pred,label,metric=self.valid_metric,mapper=self.mapper,get_sentence=True)
+                t1,t2 = cal_cer(att_pred,label,mapper=self.mapper,get_sentence=True)
                 all_pred += t1
                 all_true += t2
                 val_acc += cal_acc(att_pred,label)*int(x.shape[0])
-                val_cer += cal_cer(att_pred,label,metric=self.valid_metric,mapper=self.mapper)*int(x.shape[0])
+                val_cer += cal_cer(att_pred,label,mapper=self.mapper)*int(x.shape[0])
             
             # Compute CTC loss
             if self.ctc_weight>0:
@@ -265,11 +264,11 @@ class Trainer(Solver):
  
         if self.ctc_weight<1:
             # Plot attention map to log
-            val_hyp,val_txt = cal_cer(att_pred,label,metric=self.valid_metric,mapper=self.mapper,get_sentence=True)
+            val_hyp,val_txt = cal_cer(att_pred,label,mapper=self.mapper,get_sentence=True)
             val_attmap = draw_att(att_maps,att_pred)
 
             # Record loss
-            self.write_log(self.valid_metric,{'dev':val_cer/val_len})
+            self.write_log('error rate',{'dev':val_cer/val_len})
             self.write_log('acc',{'dev':val_acc/val_len})
             for idx,attmap in enumerate(val_attmap):
                 self.write_log('att_'+str(idx),attmap)
@@ -281,7 +280,7 @@ class Trainer(Solver):
                 self.best_val_ed = val_cer/val_len
                 self.verbose('Best val er       : {:.4f}       @ step {}'.format(self.best_val_ed,self.step))
                 torch.save(self.asr_model, os.path.join(self.ckpdir,'asr'))
-                if self.apply_clm and write:
+                if self.apply_clm:
                     torch.save(self.clm.clm,  os.path.join(self.ckpdir,'clm'))
                 # Save hyps.
                 with open(os.path.join(self.ckpdir,'best_hyp.txt'),'w') as f:
@@ -298,7 +297,6 @@ class Tester(Solver):
         self.verbose('During beam decoding, batch size is set to 1, please speed up with --njobs.')
         self.njobs = self.paras.njobs
         self.decode_step_ratio = config['solver']['max_decode_step_ratio']
-        self.valid_metric = config['solver']['dev_metric']
         
         self.decode_file = "_".join(['decode','beam',str(self.config['solver']['decode_beam_size']),
                                      'len',str(self.config['solver']['max_decode_step_ratio'])])
@@ -338,6 +336,7 @@ class Tester(Solver):
         self.asr_model = self.asr_model.to(self.device)
         self.verbose('Checking models performance on dev set '+str(self.config['solver']['dev_set'])+'...')
         self.valid()
+        self.asr_model = self.asr_model.to('cpu') # move origin model to cpu, clone it to GPU for each thread
 
     def exec(self):
         '''Perform inference step with beam search decoding.'''
@@ -369,7 +368,7 @@ class Tester(Solver):
         # Forward
         with torch.no_grad():
             max_decode_step =  int(np.ceil(state_len[0]*self.decode_step_ratio))
-            model = copy.deepcopy(self.asr_model)
+            model = copy.deepcopy(self.asr_model).to(self.device)
             hyps = model.beam_decode(x, max_decode_step, state_len, self.decode_beam_size)
         del model
 
@@ -397,14 +396,15 @@ class Tester(Solver):
 
                 # Forward
                 ctc_pred, state_len, att_pred, att_maps = self.asr_model(x, ans_len+VAL_STEP,state_len=state_len)
-                ctc_results.append(torch.argmax(ctc_pred,dim=-1).cpu())
+                ctc_pred = torch.argmax(ctc_pred,dim=-1).cpu() if ctc_pred is not None else None
+                ctc_results.append(ctc_pred)
 
                 # Result
                 label = y[:,1:ans_len+1].contiguous()
-                t1,t2 = cal_cer(att_pred,label,metric=self.valid_metric,mapper=self.mapper,get_sentence=True)
+                t1,t2 = cal_cer(att_pred,label,mapper=self.mapper,get_sentence=True)
                 all_pred += t1
                 all_true += t2
-                val_cer += cal_cer(att_pred,label,metric=self.valid_metric,mapper=self.mapper)*int(x.shape[0])
+                val_cer += cal_cer(att_pred,label,mapper=self.mapper)*int(x.shape[0])
                 val_len += int(x.shape[0])
         
         
@@ -437,7 +437,6 @@ class RNNLM_Trainer(Solver):
         self.logdir = os.path.join(paras.logdir,self.exp_name)
         self.log = SummaryWriter(self.logdir)
         self.valid_step = config['solver']['dev_step']
-        self.valid_metric = config['solver']['dev_metric']
         self.best_dev_ppx = 1000
 
         # training details

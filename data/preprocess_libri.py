@@ -10,14 +10,19 @@ import pickle
 import numpy as np
 import pandas as pd
 
+def boolean_string(s):
+    if s not in ['False', 'True']:
+        raise ValueError('Not a valid boolean string')
+    return s == 'True'
+
 
 parser = argparse.ArgumentParser(description='Preprocess program for LibriSpeech dataset.')
 parser.add_argument('--data_path', type=str, help='Path to raw LibriSpeech dataset')
 parser.add_argument('--feature_type', default='fbank', type=str, help='Feature type ( mfcc / fbank )', required=False)
 parser.add_argument('--feature_dim', default=40, type=int, help='Dimension of feature', required=False)
-parser.add_argument('--apply_delta', default=True, type=bool, help='Append Delta', required=False)
-parser.add_argument('--apply_delta_delta', default=False, type=bool, help='Append Delta Delta', required=False)
-parser.add_argument('--apply_cmvn', default=True, type=bool, help='Apply CMVN on feature', required=False)
+parser.add_argument('--apply_delta', default=True, type=boolean_string, help='Append Delta', required=False)
+parser.add_argument('--apply_delta_delta', default=False, type=boolean_string, help='Append Delta Delta', required=False)
+parser.add_argument('--apply_cmvn', default=True, type=boolean_string, help='Apply CMVN on feature', required=False)
 parser.add_argument('--output_path', default='.', type=str, help='Path to store output', required=False)
 parser.add_argument('--n_jobs', default=-1, type=int, help='Number of jobs used for feature extraction', required=False)
 parser.add_argument('--target', default='subword', type=str, help='Learning target ( phoneme / char / subword / word )', required=False)

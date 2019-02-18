@@ -46,19 +46,18 @@ solver:
   max_label_len: 400                          # Max length for output sequence (0 for no restriction)
   # Training options
   train_set: ['train-clean-100']              #
-  batch_size: 16                              # training batch size
+  batch_size: 24                              # training batch size
   apex: True                                  # Use APEX (see https://github.com/NVIDIA/apex for more details)
-  total_steps: 350000                         # total steps for training                         
+  total_steps: 300000                         # total steps for training                         
   tf_start: 1.0                               # teacher forcing rate during training will be linearly
   tf_end: 1.0                                 # decaying from upperbound to lower bound for each epoch
   # Validation options
   dev_set: ['dev-clean']                      
   dev_batch_size: 16                             
-  dev_step: 2500
-  dev_metric: 'sub_wer'
+  dev_step: 2000
   # Decoding options
   test_set: ['test-clean']
-  max_decode_step_ratio: 0.07
+  max_decode_step_ratio: 0.1
   decode_beam_size: 20
   decode_ctc_weight: 0.5
   decode_lm_path: 'result/libri_rnnlm460_sd0/rnnlm'

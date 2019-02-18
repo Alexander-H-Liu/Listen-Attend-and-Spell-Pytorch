@@ -8,20 +8,23 @@ from pathlib import Path
 from tqdm import tqdm
 import pickle
 
+def boolean_string(s):
+    if s not in ['False', 'True']:
+        raise ValueError('Not a valid boolean string')
+    return s == 'True'
+
 parser = argparse.ArgumentParser(description='Preprocess program for TIMIT dataset.')
 parser.add_argument('--data_path', type=str, help='Path to raw TIMIT dataset')
 parser.add_argument('--feature_type', default='mfcc', type=str, help='Feature type ( mfcc / fbank )', required=False)
 parser.add_argument('--feature_dim', default=13, type=int, help='Dimension of feature', required=False)
-parser.add_argument('--apply_delta', default=True, type=bool, help='Append Delta', required=True)
-parser.add_argument('--apply_delta_delta', default=True, type=bool, help='Append Delta Delta', required=False)
-parser.add_argument('--apply_cmvn', default=True, type=bool, help='Apply CMVN on feature', required=False)
+parser.add_argument('--apply_delta', default=True, type=boolean_string, help='Append Delta', required=False)
+parser.add_argument('--apply_delta_delta', default=True, type=boolean_string, help='Append Delta Delta', required=False)
+parser.add_argument('--apply_cmvn', default=True, type=boolean_string, help='Apply CMVN on feature', required=False)
 parser.add_argument('--output_path', default='.', type=str, help='Path to store output', required=False)
 parser.add_argument('--n_jobs', default=-1, type=int, help='Number of jobs used for feature extraction', required=False)
 parser.add_argument('--target', default='phoneme', type=str, help='Learning target ( phoneme / char / subword / word )', required=False)
 parser.add_argument('--n_tokens', default=1000, type=int, help='Vocabulary size of target', required=False)
 paras = parser.parse_args()
-
-
 
 def read_text(file,target):
     labels = []
@@ -75,7 +78,7 @@ todo = list(Path(os.path.join(paras.data_path,'test')).rglob("*.[wW][aA][vV]"))
 print(len(todo),'audio files found in test set (should be 1680)')
 
 print('Extracting acoustic feature...',flush=True)
-tt_x = Parallel(n_jobs=paras.n_jobs)(delayed(extract_feature)(str(file),feature=paras.feature_type,dim=paras.feature_dim,cmvn=paras.apply_cmvn,delta=paras.apply_delta)                               for file in tqdm(todo))
+tt_x = Parallel(n_jobs=paras.n_jobs)(delayed(extract_feature)(str(file),feature=paras.feature_type,dim=paras.feature_dim,cmvn=paras.apply_cmvn,delta=paras.apply_delta,delta_delta=paras.apply_delta_delta)                               for file in tqdm(todo))
 print('Encoding testing target...',flush=True)
 tt_y = Parallel(n_jobs=paras.n_jobs)(delayed(read_text)(str(file),target=paras.target)                               for file in tqdm(todo))
 tt_y, encode_table = encode_target(tt_y,table=encode_table,mode=paras.target,max_idx=paras.n_tokens)
