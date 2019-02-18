@@ -115,7 +115,6 @@ dmypy.json
 .pyre/
 
 # data and log directory
-data
 log
 runs
 save
