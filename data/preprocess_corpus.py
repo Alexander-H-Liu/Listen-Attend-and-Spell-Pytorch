@@ -108,10 +108,6 @@ def feature_extract(paras, sets, output_dir, bpe_dir, encode_table):
         tr_x = Parallel(n_jobs=paras.n_jobs)(delayed(extract_feature)(str(file_path),feature=paras.feature_type,dim=paras.feature_dim,\
                     cmvn=paras.apply_cmvn,delta=paras.apply_delta,delta_delta=paras.apply_delta_delta,\
                     save_feature=change_fe(file_path, cur_path, '')) for file_path in tqdm(todos))
-        #TODO: test
-        # def foo(file_path):
-            # return len(np.load(file_path))
-        # tr_x = Parallel(n_jobs=paras.n_jobs)(delayed(foo)(change_fe(file_path, cur_path, '.npy')) for file_path in tqdm(todos))
         # sort by len
         sorted_idx = list(reversed(np.argsort(tr_x)))
         sorted_y = ['_'.join([str(i) for i in tr_y[idx]]) for idx in sorted_idx]
