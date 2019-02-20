@@ -18,6 +18,7 @@ from src.postprocess import Mapper,cal_acc,cal_cer,draw_att
 VAL_STEP = 30        # Additional Inference Timesteps to run during validation (to calculate CER)
 TRAIN_WER_STEP = 250 # steps for debugging info.
 GRAD_CLIP = 5
+CLM_MIN_SEQ_LEN = 5
 
 class Solver():
     ''' Super class Solver for all kinds of tasks'''
@@ -163,10 +164,10 @@ class Trainer(Solver):
                 loss_log['train_full'] = asr_loss
                 
                 # Adversarial loss from CLM
-                if self.apply_clm:
+                if self.apply_clm and att_pred.shape[1]>=CLM_MIN_SEQ_LEN:
                     if (self.step%self.clm.update_freq)==0:
                         # update CLM once in a while
-                        clm_log,gp = self.clm.train(att_pred.detach())
+                        clm_log,gp = self.clm.train(att_pred.detach(),CLM_MIN_SEQ_LEN)
                         self.write_log('clm_score',clm_log)
                         self.write_log('clm_gp',gp)
                     adv_feedback = self.clm.compute_loss(F.softmax(att_pred))
@@ -343,22 +344,30 @@ class Tester(Solver):
         test_cer = 0.0
         self.decode_beam_size = self.config['solver']['decode_beam_size']
         self.verbose('Start decoding with beam search, beam size = '+str(self.config['solver']['decode_beam_size']))
-        self.test_set = [(x[0].clone(),y[0].clone()) for x,y in self.test_set]
+        #self.test_set = [(x[0].clone(),y[0].clone()) for x,y in self.test_set]
         self.verbose('Number of utts to decode : {}, decoding with {} threads.'.format(len(self.test_set),self.njobs))
-        test_hyps = Parallel(n_jobs=self.njobs)(delayed(self.beam_decode)(x) for x,_ in tqdm(self.test_set))
-        self.write_hyp(test_hyps)
+        _ = Parallel(n_jobs=self.njobs)(delayed(self.beam_decode)(x[0],y[0].tolist()[0]) for x,y in tqdm(self.test_set))
         
-    def write_hyp(self,hyps):
+        self.verbose('Decode done, best results at {}.'.format(str(os.path.join(self.ckpdir,self.decode_file+'.txt'))))
+        
+        self.verbose('Top {} results at {}.'.format(self.config['solver']['decode_beam_size'],
+                                                    str(os.path.join(self.ckpdir,self.decode_file+'_nbest.txt'))))
+        
+    def write_hyp(self,hyps,y):
         '''Record decoding results'''
-        with open(os.path.join(self.ckpdir,self.decode_file+'.txt'),'w') as f:
-            for idx,hyp in enumerate(hyps):
-                gt = self.mapper.translate(self.test_set[idx][1][0].tolist(),return_string=True)
-                best_hyp = self.mapper.translate(hyp,return_string=True)
+        gt = self.mapper.translate(y,return_string=True)
+        # Best
+        with open(os.path.join(self.ckpdir,self.decode_file+'.txt'),'a') as f:
+            best_hyp = self.mapper.translate(hyps[0].outIndex,return_string=True)
+            f.write(gt+'\t'+best_hyp+'\n')
+        # N best
+        with open(os.path.join(self.ckpdir,self.decode_file+'_nbest.txt'),'a') as f:
+            for hyp in hyps:
+                best_hyp = self.mapper.translate(hyp.outIndex,return_string=True)
                 f.write(gt+'\t'+best_hyp+'\n')
-        self.verbose('Decode done, write results at {}.'.format(str(os.path.join(self.ckpdir,self.decode_file+'.txt'))))
         
 
-    def beam_decode(self,x):
+    def beam_decode(self,x,y):
         '''Perform beam decoding with end-to-end ASR'''
         # Prepare data
         x = x.to(device = self.device,dtype=torch.float32)
@@ -371,9 +380,12 @@ class Tester(Solver):
             model = copy.deepcopy(self.asr_model).to(self.device)
             hyps = model.beam_decode(x, max_decode_step, state_len, self.decode_beam_size)
         del model
+        
+        self.write_hyp(hyps,y)
+        del hyps
+        
+        return 1
 
-        # TODO : record more than just best
-        return hyps[0].outIndex
     
     def valid(self):
         '''Perform validation step (!!!NOTE!!! greedy decoding on Attention decoder only)'''

@@ -3,6 +3,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 from src.dataset import LoadDataset
 
+
 # CLM wrapper
 class CLM_wrapper(torch.nn.Module):
     def __init__(self,vocab_size,config):
@@ -25,13 +26,16 @@ class CLM_wrapper(torch.nn.Module):
         self.train_set = LoadDataset('text',text_only=True,**data_config)
         self.data_iter = iter(self.train_set)
 
-    def train(self,fake_seq):
+    def train(self,fake_seq,clm_min_seq_len):
+        real_seq = None
+        
         # Load real text
-        try:
-            real_seq = next(self.data_iter).squeeze(0)
-        except StopIteration:
-            self.data_iter = iter(self.train_set)
-            real_seq = next(self.data_iter).squeeze(0)
+        while (real_seq is None) or (real_seq.shape[1]<clm_min_seq_len):
+            try:
+                real_seq = next(self.data_iter).squeeze(0)
+            except StopIteration:
+                self.data_iter = iter(self.train_set)
+                real_seq = next(self.data_iter).squeeze(0)
         real_seq = self.onehot(real_seq.to(fake_seq.device,dtype=torch.long))
 
         # For each training step, 
@@ -40,7 +44,6 @@ class CLM_wrapper(torch.nn.Module):
         score_real = self.loss_weight*self.clm(real_seq).mean()
         score_fake = self.loss_weight*self.clm(fake_seq).mean()
         grad_penal = self.compute_gp(real_seq,fake_seq)
-
         clm_loss = score_fake - score_real + self.gp_lambda*grad_penal
         
         clm_loss.backward()
@@ -93,10 +96,11 @@ class CLM(torch.nn.Module):
         # Apply CNN for RNN due to 2-order derivative issues
         self.proj = torch.nn.Linear(vocab_size,dim[0])
         for l in range(len(kernel_size)):
-            setattr(self,'layer'+str(l),torch.nn.Conv1d(dim[l], dim[l+1], kernel_size[l], stride=stride[l],padding=1))
+            setattr(self,'layer'+str(l),torch.nn.Conv1d(dim[l], dim[l+1], kernel_size[l], stride=stride[l]))
             setattr(self,'drop'+str(l),torch.nn.Dropout(dropout[l]))
         
         self.pooling = torch.nn.AdaptiveAvgPool1d(1)
+        self.drop_final = torch.nn.Dropout()
         self.score = torch.nn.Linear(dim[-1], 1)
 
     def forward(self,  x):
@@ -106,7 +110,7 @@ class CLM(torch.nn.Module):
         for l in range(self.depth):
             x = getattr(self,'layer'+str(l))(x)
             x = getattr(self,'drop'+str(l))(x)
-            x = F.relu(x)
-        score = self.score(self.pooling(x).squeeze(2))
+            #x = F.relu(x)
+        score = self.score(self.drop_final(self.pooling(x).squeeze(2)))
         return score
 
