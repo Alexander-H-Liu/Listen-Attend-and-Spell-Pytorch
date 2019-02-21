@@ -1,171 +1,142 @@
-# Listen, Attend and Spell - PyTorch Implementation
+# End-to-end Automatic Speech Recognition Systems - PyTorch Implementation
 
-## Description
+This is an open source project (formerly named **Listen, Attend and Spell - PyTorch Implementation**) for end-to-end ASR implemented with Pytorch, the well known deep learning toolkit.
 
-This is a PyTorch implementation of [Listen, Attend and Spell](https://arxiv.org/abs/1508.01211v2) (LAS)  published in ICASSP 2016 (Student Paper Award) on [TIMIT](https://catalog.ldc.upenn.edu/ldc93s1) and [LibriSpeech](http://www.openslr.org/12/).
-Feel free to use/modify them, any bug report or improvement suggestion will be appreciated. If you have any questions, please contact b03902034[AT]ntu.edu.tw
+The end-to-end ASR was based on Listen, Attend and Spell<sup>[1](#Reference)</sup>. Multiple techniques proposed recently were also implemented, serving as additional plug-ins for better performance. For the list of techniques implemented, please refer to the [highlights](#Highlights), [configuration](config/) and [references](#Reference).
 
-### TIMIT
+Feel free to use/modify them, any bug report or improvement suggestion will be appreciated. If you have any questions, please contact r07922013[AT]ntu.edu.tw
 
-The input feature is MFCC 39 (13+delta+accelerate), and the output phoneme classes is reduced from 61 to 39 classes during evaluation. This implement achieves about 26% phoneme error rate on TIMIT's testing set (using original setting in the paper without hyper parameter tuning, models are stored in [`checkpoint/`](checkpoint/)). It's not a remarkable score but please notice that deep end2end ASR without special designed loss function such as LAS requires larger corpus to achieve outstanding performance.
+## Highlights
 
-- Learning Curve
+- Acoustic feature extraction
+    - Purepython extraction using librosa as the backend
+    - One-click execution scripts (currently supporting TIMT & LibriSpeech)
+    - Phoneme/character/subword<sup>[2](#Reference)</sup>/word embedding for text encoding
 
-![](log/result.jpg)
+- End-to-end ASR 
+    - Seq2seq ASR with different types of encoder/attention<sup>[3](#Reference)</sup>
+    - CTC-based ASR<sup>[4](#Reference)</sup>, which can also be hybrid<sup>[5](#Reference)</sup> with the former
+    - *yaml*-styled model construction and hyper parameters setting
+    -  Training process visualization with [TensorBoard](https://www.tensorflow.org/guide/summaries_and_tensorboard), including attention alignment
 
-- Attention Visualization & Recognition Result
+- Speech recognition (decoding)
+    - Beam search decoding
+    - RNN language model training and joint decoding for ASR<sup>[6](#Reference)</sup>
+    - Joint CTC-attention based decoding<sup>[6](#Reference)</sup>
 
-
-Result of the first sample in TIMIT testing set. Training log is availible in [here](log/), use ```tensorboard --logdir=las_example/``` to access.
-
-
-![](log/attention.jpg)
-
-### LibriSpeech
-
-For LibriSpeech, the input feature is 40-dimensional log-mel filter bank computed every 10ms as specified in the original paper. The decoder is character based, outputting the distribution over 30 characters (including alphabet and punctuation).
-
-##  Remarks
-
-### Differences from the paper
-Be aware of some differences between this implementation and the originally proposed model:
-- Smaller Dataset
-
-    Originally, LAS was trained on Google's private voice search dataset representing 2000 hours of data plus additional data augmentation. Here the model was trained on [TIMIT](https://catalog.ldc.upenn.edu/ldc93s1), a MUCH smaller dataset, without any data augmentation. Even LibriSpeech is relatively small corpus for LAS.
-
-- Different Metric
-
-    On TIMIT, the evaluation criterion we chose is the [Word Error Rate (WER)](https://en.wikipedia.org/wiki/Word_error_rate) of the output phoneme (i.e. phoneme error rate ) sequence instead of real sentences composed of real words.
-
-- Simplified Speller
-
-     Speller contains a single layer LSTM instead of 2 layer LSTM proposed. According to the response I got from a letter I wrote to the author, using single layer can get similar result.
-
-- Features for character prediction
-
-    According to Equation (8) in the paper, last layer of Speller takes both RNN output and attention-based context as input and output character distribution. However, the actual operation of this equation is unclear. In this implementation, RNN output and attention-based context are simply concatenated.
-
-### Improvement
-
--   Multi-head Attention (MHA)
-
-    Google had released another [paper](https://arxiv.org/abs/1712.01769) introducing state-of-the-art end2end ASR based on LAS. According to the paper, they modified the attention mechanism to MHA and gain remarkable performance improvement. We've implemented MHA as described in section 2.2.2. in the paper and enable it when training on LibriSpeech. It is worth to mention that MHA increases the training time of LAS (which was already too slow), so consider disable MHA by setting multi_head=1 in config on slower GPU.
-
--   Label Smoothing
-
-    Like MHA, label smoothing was mentioned in the same [paper](https://arxiv.org/abs/1712.01769) and show significant improvement on LAS. However, pytorch's loss function design makes it difficult to implement label smoothing. In this implementation, label smoothing is achieved by self-defined loss function (can be found at [functions.py](util/functions.py)). The implementation may be numerical unstable comparing to native loss function provided by pytorch, you may disable label smoothing by setting it to 0 in config file. We will be very thankful for bug report or sugestion on label smoothing implementation.
 
 ## Requirements
 
-### Execution Environment
-
 - Python 3
-- GPU computing is recommended for training efficiency
-- Computing power and memory space (both RAM/GPU's RAM) is **extremely important** if you'ld like to train your own model, especially on LibriSpeech.
+- Computing power (high-end GPU) and memory space (both RAM/GPU's RAM) is **extremely important** if you'd like to train your own model.
+- Required packages and their use are listed [here](used_package.txt).
+
+## Instructions
+
+*** Before you start, make sure all the [packages required](used_package.txt) were installed correctly***
+
+###Step 0. Preprocessing - Acoustic Feature Extraction & Text Encoding
+
+Preprocessing scripts are placed under [`data/`](data/), you may execute them directly. The extracted data, which is ready for training, will be stored in the same place by default. For example,
+```
+cd data/
+python3 preprocess_libri.py --data_path <path to LibriSpeech on your computer> 
+```
+
+The parameters available for these scripts are as follow,
+
+| Options        | Description                                                               |
+|-------------------|---------------------------------------------------------------------------|
+| data_path         | Path to the raw dataset (can be obtained by download & unzip)                 |
+| feature_type      | Which type of acoustic feature to be extracted, fbank or mfcc                                                             |
+| feature_dim       | Feature dimension, usually depends on the feature type (e.g. 13 for mfcc) |
+| apply_delta       | Append delta of the acoustic feature to itself                            |
+| apply_delta_delta | Append delta of delta                                                     |
+| apply_cmvn        | Normalize acoustic feature                                                |
+| output_path       | Output path for extracted data (by default, it's data/)                   |
+| target            | Text encoding target, one of phoneme/char/subword/word                    |
+| n_tokens          | Vocabulary size, only applies for subword/word    
+
+You may check the parameter type and default value by using the option ```--help``` for each script.
+
+###Step 1. Configuring - Model Design & Hyperparameter Setup
+
+All the parameters related to training/decoding will be stored in a yaml file. Hyperparameter tuning and massive experiment and can be managed easily this way. See [documentation and examples](config/) for the exact format. **Note that the example configs provided were not fine-tuned**, you may want to write your own config for best performance.
+
+###Step 2. Training - End-to-end ASR (or RNN-LM) Learning
+
+Once the config file is ready, run the following command to train end-to-end ASR (or language model)
+```
+python3 main.py --config <path of config file> 
+```
+All settings will be parsed from the config file automatically to start training, the log file can be accessed through TensorBoard. ***Please notice that the error rate reported on the TensorBoard is biased (see issue #10), you should run the testing phase in order to get the true performance of model***. For example, train an ASR on LibriSpeech and watch the log with
+```
+python3 main.py --config config/libri_example.yaml
+# open TensorBoard to see log
+tensorboard --logdir log/
+# Train an external language model
+python3 main.py --config config/libri_example_rnnlm.yaml --rnnlm
+```
+There are also some options,  which do not influence the performance (except `seed`), are available in this phase including the followings
+
+| Options | Description                                                                                   |
+|---------|-----------------------------------------------------------------------------------------------|
+| config  | Path of config file                                                                           |
+| seed    | Random seed, **note this is an option that affects the result**                                         |
+| name    | Experiments for logging and saving model, by default it's <name of config file>_<random seed> |
+| logdir  | Path to store training logs (log files for tensorboard), default `log/`                                                   |
+| ckpdir  | Path to store results, default `result/<name>`                                                |
+| njobs   | Number of workers for Pytorch DataLoader                                                      |
+| cpu     | CPU-only mode, not recommended                                                                |
+| no-msg  | Hide all message from stdout                                                                  |
+| rnnlm   | Switch to rnnlm training mode                                                               |
+| test    | Switch to decoding mode (do not use during training phase) 
 
 
-### Packages
+###Step 3. Testing - Speech Recognition & Performance Evaluation
 
-- [SoX](http://sox.sourceforge.net/)
+Once a model was trained, run the following command to test it
+```
+python3 main.py --config <path of config file> --test
+```
+Recognition result will be stored at `result/<name>/` as a txt file with auto-naming according to the decoding parameters specified in config file. The result file may be evaluated with `eval.py`. For example, test the ASR trained on LibriSpeech and check performance with
+```
+python3 main.py --config config/libri_example.yaml --test
+# Check WER/CER
+python3 eval.py --file result/libri_example_sd0/decode_*.txt
+```
+**Notice that the meaning of options for `main.py` in this phase will change**
 
-    Command line tool for transforming raw wave file in TIMIT from NIST to RIFF
+| Options | Description                                                                                   |
+|---------|-----------------------------------------------------------------------------------------------|
+| test    | *Must be enabled*|
+| config  | Path of config file                                                                           |
+| name    |*Must be identical to the models training phase*  |
+| ckpdir  | *Must be identical to the models training phase*                                               |
+| njobs   | Number of threads used for decoding, very important in terms of efficiency. Large value equals fast decoding yet RAM/GPU RAM expensive.    |
+| cpu     | CPU-only mode, not recommended                                                     |
+| no-msg  | Hide all message from stdout                                                              |
 
-
-- [python_speech_features](https://github.com/jameslyons/python_speech_features)
-
-    A Python package for extracting MFCC features during preprocessing
-
-- [pydub](https://github.com/jiaaro/pydub)
-
-    High level api for audio file format tranlation
-
-- [python_speech_features](https://github.com/jameslyons/python_speech_features)
-
-    A Python package for extracting acoustic features during preprocessing
-
-- joblib
-    
-    Parallel tool to speed up feature extraction/ dataset loading.
-
-- tdqm
-
-    Progress bar for visualization.
-
-- [PyTorch](http://pytorch.org/) (0.4.0)
-
-    Please use PyTorch 0.4.0 in where loss computation over 2D target is availible and the [softmax bug](https://github.com/pytorch/pytorch/issues/1020) on 3D input is fixed.
-
-
-- [editdistance](https://github.com/aflc/editdistance)
-
-    Package for calculating edit distance (Levenshtein distance).
-
-- [tensorboardX](https://github.com/lanpa/tensorboard-pytorch)
-
-    Tensorboard interface for pytorch, we used it to visualize training process.
-
-- [pandas](https://pandas.pydata.org/)
-
-    For LibriSpeech dataset loading.
-
-
-## Setup
-- TIMIT
-    - Dataset Preprocess
-
-        Please prepare TIMIT dataset without modifying the file structure of it and run the following command to preprocess it from wave to MFCC 39 before training.
-
-            cd util
-            ./timit_preprocess.sh <TIMIT folder>       
-
-        After preprocessing step, `timit_mfcc_39.pkl` should be in your TIMIT folder. Add your data path to config file.
-
-    - Train LAS
-        Run the following commands to train LAS on TIMIT
-            
-            mkdir -p checkpoint
-            mkdir -p log
-            python3 train_timit.py <config file path>
-
-        Training log will be stored at `log/` while model checkpoint at ` checkpoint/`
-
-        For a customized experiment, please read and modify [`config/las_example_config.yaml`](config/las_example_config.yaml). For more information and a simple demonstration, please refer to [`las_demo.ipynb`](las_demo.ipynb)
-    
-- LibriSpeech
-
-
-     LibriSpeech includes over 1000 hours of speech, **process it with powerful computer ( enough cores , large RAM and high-end GPU) is strongly recommanded.**
-
-    -  Dataset Preprocess
-    
-        Download [LibriSpeech](http://www.openslr.org/12/) and extract it. Run the following command to process from wave to log-mel filter bank feature. 
-
-            cd util
-            ./librispeech_preprocess.sh <Absolute path to LibriSpeech folder> 
-
-        Note that the script is an example using clean-100 dataset only. For more arguments and instruction preprocessing LibriSpeech, please run
-
-            python3 util/librispeech_preprocess.py -h
-
-        After preprocessing step, `train.csv`/`test.csv`/`dev.csv`/`idx2chap.csv` should be in your LibriSpeech folder. Extracted feature is stored in npy format. Raw wave file will also be availible (Speech signal of LibriSpeech comes in FLAC format).
-
-    - LAS Model
-        Run the following commands to train LAS on LibriSpeech  ​  
-
-            mkdir -p checkpoint
-            mkdir -p log
-            python3 train_libri.py <config file path>
-
-        Training log (access it with tensorboard) will be stored at `log/` while model checkpoint at ` checkpoint/`. For a customized experiment, please read and modify [`config/las_libri_config.yaml`](config/las_libri_config.yaml). 
+Rest of the options are *ineffective*  in the testing phase.
 
 ## ToDo
 
-- Supply experiment result of LibriSpeech dataset
-- WSJ Dataset
+- Plot attention map during testing
+- Pure CTC training 
+- Resume model training
 
-## Acknowledgements
+## Acknowledgements 
+- Parts of the implementation refer to [ESPnet](https://github.com/espnet/espnet), a great end-to-end speech processing toolkit by Watanabe *et al*.
 - Special thanks to [William Chan](http://williamchan.ca/), the first author of LAS, for answering my questions during implementation.
-- Thanks [xiaoming](https://github.com/lezasantaizi), [Odie Ko](https://github.com/odie2630463) for identifying several issues in our implementation.
+- Thanks [xiaoming](https://github.com/lezasantaizi), [Odie Ko](https://github.com/odie2630463) for identifying several issues in our implementation. 
 
-## References
-- TIMIT preprocessing : https://github.com/Faur/TIMIT
+## Reference
+
+1. [Listen, Attend and Spell](https://arxiv.org/abs/1508.01211v2), W Chan *et al.*
+2. [Neural Machine Translation of Rare Words with Subword Units](http://www.aclweb.org/anthology/P16-1162), R Sennrich *et al.*
+3. [Attention-Based Models for Speech Recognition](https://arxiv.org/abs/1506.07503), J Chorowski *et al*.
+4. [Connectionist Temporal Classification: Labelling Unsegmented Sequence Data with Recurrent Neural Networks](ftp://ftp.idsia.ch/pub/juergen/icml2006.pdf), A Graves *et al*.
+5. [Joint CTC-Attention based End-to-End Speech Recognition using Multi-task Learning](https://arxiv.org/abs/1609.06773), S Kim *et al.* 
+6.  [Advances in Joint CTC-Attention based End-to-End Speech Recognition with a Deep CNN Encoder and RNN-LM](https://arxiv.org/abs/1706.02737), T Hori *et al.* 
+7.  [Joint CTC-Attention based End-to-End Speech Recognition using Multi-task Learning](https://arxiv.org/abs/1609.06773), S Kim *et al.* 
+8.  [Joint CTC-Attention based End-to-End Speech Recognition using Multi-task Learning](https://arxiv.org/abs/1609.06773), S Kim *et al.* 
