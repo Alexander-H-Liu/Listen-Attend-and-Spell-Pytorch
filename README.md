@@ -8,7 +8,9 @@ Feel free to use/modify them, any bug report or improvement suggestion will be a
 
 ## Highlights
 
-![](log/demo.png)
+<p align="center">
+  <img src="log/demo.png" width="596" height="200">
+</p>
 
 - Acoustic feature extraction
     - Purepython extraction using librosa as the backend
