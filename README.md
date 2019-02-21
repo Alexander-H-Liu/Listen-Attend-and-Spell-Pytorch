@@ -4,7 +4,7 @@ This is an open source project (formerly named **Listen, Attend and Spell - PyTo
 
 The end-to-end ASR was based on Listen, Attend and Spell<sup>[1](#Reference)</sup>. Multiple techniques proposed recently were also implemented, serving as additional plug-ins for better performance. For the list of techniques implemented, please refer to the [highlights](#Highlights), [configuration](config/) and [references](#Reference).
 
-Feel free to use/modify them, any bug report or improvement suggestion will be appreciated. If you have any questions, please contact r07922013[AT]ntu.edu.tw
+Feel free to use/modify them, any bug report or improvement suggestion will be appreciated. If you have any questions, please contact r07922013[AT]ntu.edu.tw. If you find this project helpful for your research, please do consider to cite [my paper](#Citation), thanks!
 
 ## Highlights
 
@@ -33,9 +33,10 @@ Feel free to use/modify them, any bug report or improvement suggestion will be a
 
 ## Instructions
 
-*** Before you start, make sure all the [packages required](used_package.txt) were installed correctly***
 
-###Step 0. Preprocessing - Acoustic Feature Extraction & Text Encoding
+***Before you start, make sure all the [packages required](used_package.txt) were installed correctly***
+
+### Step 0. Preprocessing - Acoustic Feature Extraction & Text Encoding
 
 Preprocessing scripts are placed under [`data/`](data/), you may execute them directly. The extracted data, which is ready for training, will be stored in the same place by default. For example,
 ```
@@ -59,11 +60,11 @@ The parameters available for these scripts are as follow,
 
 You may check the parameter type and default value by using the option ```--help``` for each script.
 
-###Step 1. Configuring - Model Design & Hyperparameter Setup
+### Step 1. Configuring - Model Design & Hyperparameter Setup
 
 All the parameters related to training/decoding will be stored in a yaml file. Hyperparameter tuning and massive experiment and can be managed easily this way. See [documentation and examples](config/) for the exact format. **Note that the example configs provided were not fine-tuned**, you may want to write your own config for best performance.
 
-###Step 2. Training - End-to-end ASR (or RNN-LM) Learning
+### Step 2. Training - End-to-end ASR (or RNN-LM) Learning
 
 Once the config file is ready, run the following command to train end-to-end ASR (or language model)
 ```
@@ -93,7 +94,7 @@ There are also some options,  which do not influence the performance (except `se
 | test    | Switch to decoding mode (do not use during training phase) 
 
 
-###Step 3. Testing - Speech Recognition & Performance Evaluation
+### Step 3. Testing - Speech Recognition & Performance Evaluation
 
 Once a model was trained, run the following command to test it
 ```
@@ -128,15 +129,26 @@ Rest of the options are *ineffective*  in the testing phase.
 ## Acknowledgements 
 - Parts of the implementation refer to [ESPnet](https://github.com/espnet/espnet), a great end-to-end speech processing toolkit by Watanabe *et al*.
 - Special thanks to [William Chan](http://williamchan.ca/), the first author of LAS, for answering my questions during implementation.
-- Thanks [xiaoming](https://github.com/lezasantaizi), [Odie Ko](https://github.com/odie2630463) for identifying several issues in our implementation. 
+- Thanks [xiaoming](https://github.com/lezasantaizi), [Odie Ko](https://github.com/odie2630463) and [b-etienne](https://github.com/b-etienne) for identifying several issues in our implementation. 
 
 ## Reference
 
 1. [Listen, Attend and Spell](https://arxiv.org/abs/1508.01211v2), W Chan *et al.*
 2. [Neural Machine Translation of Rare Words with Subword Units](http://www.aclweb.org/anthology/P16-1162), R Sennrich *et al.*
 3. [Attention-Based Models for Speech Recognition](https://arxiv.org/abs/1506.07503), J Chorowski *et al*.
-4. [Connectionist Temporal Classification: Labelling Unsegmented Sequence Data with Recurrent Neural Networks](ftp://ftp.idsia.ch/pub/juergen/icml2006.pdf), A Graves *et al*.
+4. [Connectionist Temporal Classification: Labelling Unsegmented Sequence Data with Recurrent Neural Networks](https://www.cs.toronto.edu/~graves/icml_2006.pdf), A Graves *et al*.
 5. [Joint CTC-Attention based End-to-End Speech Recognition using Multi-task Learning](https://arxiv.org/abs/1609.06773), S Kim *et al.* 
 6.  [Advances in Joint CTC-Attention based End-to-End Speech Recognition with a Deep CNN Encoder and RNN-LM](https://arxiv.org/abs/1706.02737), T Hori *et al.* 
-7.  [Joint CTC-Attention based End-to-End Speech Recognition using Multi-task Learning](https://arxiv.org/abs/1609.06773), S Kim *et al.* 
-8.  [Joint CTC-Attention based End-to-End Speech Recognition using Multi-task Learning](https://arxiv.org/abs/1609.06773), S Kim *et al.* 
+
+## Citation
+
+```
+@inproceedings{liu2019adversarial,
+  title={Adversarial Training of End-to-end Speech Recognition Using a Criticizing Language Model},
+  author={Liu, Alexander and Lee, Hung-yi and Lee, Lin-shan},
+  booktitle={Acoustics, Speech and Signal Processing (ICASSP)},
+  year={2019},
+  organization={IEEE}
+
+}
+```
