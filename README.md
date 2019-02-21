@@ -8,6 +8,8 @@ Feel free to use/modify them, any bug report or improvement suggestion will be a
 
 ## Highlights
 
+![](log/demo.png)
+
 - Acoustic feature extraction
     - Purepython extraction using librosa as the backend
     - One-click execution scripts (currently supporting TIMT & LibriSpeech)
@@ -149,6 +151,5 @@ Rest of the options are *ineffective*  in the testing phase.
   booktitle={Acoustics, Speech and Signal Processing (ICASSP)},
   year={2019},
   organization={IEEE}
-
 }
 ```
