@@ -78,6 +78,7 @@ class Seq2Seq(nn.Module):
             self.attention.reset_enc_mem()
             last_char = self.embed(torch.zeros((bs),dtype=torch.long).to(next(self.decoder.parameters()).device))
             output_char_seq = []
+            sampled_char_seq = []
             output_att_seq = [[]] * self.attention.num_head
         
             # Decode
@@ -97,9 +98,12 @@ class Seq2Seq(nn.Module):
                         last_char = teacher[:,t+1,:]
                     else:
                         sampled_char = Categorical(F.softmax(cur_char,dim=-1)).sample()
+                        sampled_char_seq.append(sampled_char)
                         last_char = self.embed(sampled_char)
                 else:
-                    last_char = self.embed(torch.argmax(cur_char,dim=-1))
+                    sampled_char = torch.argmax(cur_char,dim=-1)
+                    sampled_char_seq.append(sampled_char)
+                    last_char = self.embed(sampled_char)
 
 
                 output_char_seq.append(cur_char)
@@ -109,7 +113,11 @@ class Seq2Seq(nn.Module):
             att_output = torch.stack(output_char_seq,dim=1)
             att_maps = [torch.stack(att,dim=1) for att in output_att_seq]
 
-        return ctc_output, encode_len, att_output, att_maps
+            sampled_chars = None
+            if len(sampled_char_seq) == decode_step:
+                sampled_chars = torch.stack(sampled_char_seq, dim=1)
+
+        return ctc_output, encode_len, att_output, att_maps, sampled_chars
 
     def init_parameters(self):
         # Reference : https://github.com/espnet/espnet/blob/master/espnet/nets/e2e_asr_th.py

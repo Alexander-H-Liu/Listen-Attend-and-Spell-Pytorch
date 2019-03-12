@@ -13,6 +13,7 @@ from src.rnnlm import RNN_LM
 from src.clm import CLM_wrapper
 from src.dataset import LoadDataset
 from src.postprocess import Mapper,cal_acc,cal_cer,draw_att
+from src.ocd import ocd_loss
 
 
 VAL_STEP = 30        # Additional Inference Timesteps to run during validation (to calculate CER)
@@ -62,6 +63,7 @@ class Trainer(Solver):
         # Training details
         self.step = 0
         self.max_step = config['solver']['total_steps']
+        self.ocd = config['solver'].get('ocd', False)
         self.tf_start = config['solver']['tf_start']
         self.tf_end = config['solver']['tf_end']
         self.apex = config['solver']['apex']
@@ -137,7 +139,7 @@ class Trainer(Solver):
 
                 # ASR forwarding 
                 self.asr_opt.zero_grad()
-                ctc_pred, state_len, att_pred, _ =  self.asr_model(x, ans_len,tf_rate=tf_rate,teacher=y,state_len=state_len)
+                ctc_pred, state_len, att_pred, _, att_sample =  self.asr_model(x, ans_len,tf_rate=tf_rate,teacher=y,state_len=state_len)
 
                 # Calculate loss function
                 loss_log = {}
@@ -148,10 +150,13 @@ class Trainer(Solver):
                 # CE loss on attention decoder
                 if self.ctc_weight<1:
                     b,t,c = att_pred.shape
-                    att_loss = self.seq_loss(att_pred.view(b*t,c),label.view(-1))
-                    att_loss = torch.sum(att_loss.view(b,t),dim=-1)/torch.sum(y!=0,dim=-1)\
-                               .to(device = self.device,dtype=torch.float32) # Sum each uttr and devide by length
-                    att_loss = torch.mean(att_loss) # Mean by batch
+                    if self.ocd:
+                        att_loss = ocd_loss(att_pred, att_sample, label, temp=1e-8)
+                    else:
+                        att_loss = self.seq_loss(att_pred.view(b*t,c),label.view(-1))
+                        att_loss = torch.sum(att_loss.view(b,t), dim=-1)/torch.sum(y!=0,dim=-1)\
+                                .to(device = self.device,dtype=torch.float32) # Sum each uttr and devide by length
+                        att_loss = torch.mean(att_loss) # Mean by batch
                     loss_log['train_att'] = att_loss
 
                 # CTC loss on CTC decoder
@@ -231,15 +236,18 @@ class Trainer(Solver):
             ans_len = int(torch.max(torch.sum(y!=0,dim=-1)))
             
             # Forward
-            ctc_pred, state_len, att_pred, att_maps = self.asr_model(x, ans_len+VAL_STEP,state_len=state_len)
+            ctc_pred, state_len, att_pred, att_maps, att_sample = self.asr_model(x, ans_len+VAL_STEP,state_len=state_len)
 
             # Compute attention loss & get decoding results
             label = y[:,1:ans_len+1].contiguous()
             if self.ctc_weight<1:
-                seq_loss = self.seq_loss(att_pred[:,:ans_len,:].contiguous().view(-1,att_pred.shape[-1]),label.view(-1))
-                seq_loss = torch.sum(seq_loss.view(x.shape[0],-1),dim=-1)/torch.sum(y!=0,dim=-1)\
-                           .to(device = self.device,dtype=torch.float32) # Sum each uttr and devide by length
-                seq_loss = torch.mean(seq_loss) # Mean by batch
+                if self.ocd:
+                    seq_loss = ocd_loss(att_pred, att_sample, label, temp=1e-8)
+                else:
+                    seq_loss = self.seq_loss(att_pred[:,:ans_len,:].contiguous().view(-1,att_pred.shape[-1]),label.view(-1))
+                    seq_loss = torch.sum(seq_loss.view(x.shape[0],-1),dim=-1)/torch.sum(y!=0,dim=-1)\
+                               .to(device = self.device,dtype=torch.float32) # Sum each uttr and devide by length
+                    seq_loss = torch.mean(seq_loss) # Mean by batch
                 val_att += seq_loss.detach()*int(x.shape[0])
                 t1,t2 = cal_cer(att_pred,label,mapper=self.mapper,get_sentence=True)
                 all_pred += t1
@@ -407,7 +415,7 @@ class Tester(Solver):
                 ans_len = int(torch.max(torch.sum(y!=0,dim=-1)))
 
                 # Forward
-                ctc_pred, state_len, att_pred, att_maps = self.asr_model(x, ans_len+VAL_STEP,state_len=state_len)
+                ctc_pred, state_len, att_pred, att_maps, _ = self.asr_model(x, ans_len+VAL_STEP,state_len=state_len)
                 ctc_pred = torch.argmax(ctc_pred,dim=-1).cpu() if ctc_pred is not None else None
                 ctc_results.append(ctc_pred)
 
