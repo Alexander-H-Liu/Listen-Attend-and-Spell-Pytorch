@@ -83,6 +83,7 @@ if paras.target == 'subword':
     # Train BPE
     from subprocess import call
     call(['spm_train',
+          '--model_type=bpe',
           '--input='+os.path.join(bpe_dir,'train.txt'),
           '--model_prefix='+os.path.join(bpe_dir,'bpe'),
           '--vocab_size='+str(paras.n_tokens),
