@@ -93,9 +93,6 @@ class Trainer(Solver):
         self.ctc_loss = torch.nn.CTCLoss(blank=0, reduction='mean')
         self.ctc_weight = self.config['asr_model']['optimizer']['joint_ctc']
         
-        # TODO: load pre-trained model
-        if self.paras.load:
-            raise NotImplementedError
             
         # Setup optimizer
         if self.apex and self.config['asr_model']['optimizer']['type']=='Adam':
@@ -104,6 +101,17 @@ class Trainer(Solver):
         else:
             self.asr_opt = getattr(torch.optim,self.config['asr_model']['optimizer']['type'])
             self.asr_opt = self.asr_opt(self.asr_model.parameters(), lr=self.config['asr_model']['optimizer']['learning_rate'],eps=1e-8)
+        
+        
+        if self.paras.load:
+            #raise NotImplementedError
+            checkpoint = torch.load(os.path.join(self.ckpdir,'asr'))
+            self.asr_model.load_state_dict(checkpoint['model_state_dict'])
+            self.asr_opt.load_state_dict(checkpoint['optimizer_state_dict'])
+            self.step = checkpoint['step']
+            self.asr_loss = checkpoint['asr_loss']
+            self.asr_model.train()
+            print("model loaded")
 
         # Apply CLM
         if self.apply_clm:
@@ -160,8 +168,8 @@ class Trainer(Solver):
                     ctc_loss = self.ctc_loss( F.log_softmax( ctc_pred.transpose(0,1),dim=-1), label, torch.LongTensor(state_len), target_len)
                     loss_log['train_ctc'] = ctc_loss
                 
-                asr_loss = (1-self.ctc_weight)*att_loss+self.ctc_weight*ctc_loss
-                loss_log['train_full'] = asr_loss
+                self.asr_loss = (1-self.ctc_weight)*att_loss+self.ctc_weight*ctc_loss
+                loss_log['train_full'] = self.asr_loss
                 
                 # Adversarial loss from CLM
                 if self.apply_clm and att_pred.shape[1]>=CLM_MIN_SEQ_LEN:
@@ -171,10 +179,10 @@ class Trainer(Solver):
                         self.write_log('clm_score',clm_log)
                         self.write_log('clm_gp',gp)
                     adv_feedback = self.clm.compute_loss(F.softmax(att_pred))
-                    asr_loss -= adv_feedback
+                    self.asr_loss -= adv_feedback
 
                 # Backprop
-                asr_loss.backward()
+                self.asr_loss.backward()
                 grad_norm = torch.nn.utils.clip_grad_norm_(self.asr_model.parameters(), GRAD_CLIP)
                 if math.isnan(grad_norm):
                     self.verbose('Error : grad norm is NaN @ step '+str(self.step))
@@ -280,7 +288,14 @@ class Trainer(Solver):
             if val_cer/val_len  < self.best_val_ed:
                 self.best_val_ed = val_cer/val_len
                 self.verbose('Best val er       : {:.4f}       @ step {}'.format(self.best_val_ed,self.step))
-                torch.save(self.asr_model, os.path.join(self.ckpdir,'asr'))
+                #torch.save(self.asr_model, os.path.join(self.ckpdir,'asr'))
+                torch.save({
+                'step': self.step,
+                'model_state_dict': self.asr_model.state_dict(),
+                'optimizer_state_dict': self.asr_opt.state_dict(),
+                'asr_loss': self.asr_loss,
+                }, os.path.join(self.ckpdir,'asr'))
+
                 if self.apply_clm:
                     torch.save(self.clm.clm,  os.path.join(self.ckpdir,'clm'))
                 # Save hyps.
@@ -455,6 +470,7 @@ class RNNLM_Trainer(Solver):
         self.step = 0
         self.max_step = config['solver']['total_steps']
         self.apex = config['solver']['apex']
+        print("XYZ")
 
     def load_data(self):
         ''' Load training / dev set'''
@@ -468,8 +484,7 @@ class RNNLM_Trainer(Solver):
         self.rnnlm = RNN_LM(out_dim=self.mapper.get_dim(),**self.config['rnn_lm']['model_para'])
         self.rnnlm = self.rnnlm.to(self.device)
 
-        if self.paras.load:
-            raise NotImplementedError
+        
 
         # optimizer
         if self.apex and self.config['rnn_lm']['optimizer']['type']=='Adam':
@@ -478,6 +493,16 @@ class RNNLM_Trainer(Solver):
         else:
             self.rnnlm_opt = getattr(torch.optim,self.config['rnn_lm']['optimizer']['type'])
             self.rnnlm_opt = self.rnnlm_opt(self.rnnlm.parameters(), lr=self.config['rnn_lm']['optimizer']['learning_rate'],eps=1e-8)
+
+        if self.paras.load:
+            #raise NotImplementedError
+            checkpoint = torch.load(os.path.join(self.ckpdir,'rnnlm'))
+            self.rnnlm.load_state_dict(checkpoint['model_state_dict'])
+            self.rnnlm_opt.load_state_dict(checkpoint['optimizer_state_dict'])
+            self.step = checkpoint['step']
+            self.loss = checkpoint['loss']
+            self.rnnlm.train()
+            print("model loaded")
 
     def exec(self):
         ''' Training RNN-LM'''
@@ -493,12 +518,13 @@ class RNNLM_Trainer(Solver):
 
                 self.rnnlm_opt.zero_grad()
                 _, prob = self.rnnlm(y[:,:-1],ans_len)
-                loss = F.cross_entropy(prob.view(-1,prob.shape[-1]), y[:,1:].contiguous().view(-1), ignore_index=0)
-                loss.backward()
+                self.loss = F.cross_entropy(prob.view(-1,prob.shape[-1]), y[:,1:].contiguous().view(-1), ignore_index=0)
+                self.loss.backward()
+                #self.loss = loss
                 self.rnnlm_opt.step()
 
                 # logger
-                ppx = torch.exp(loss.cpu()).item()
+                ppx = torch.exp(self.loss.cpu()).item()
                 self.log.add_scalars('perplexity',{'train':ppx},self.step)
 
                 # Next step
@@ -532,6 +558,12 @@ class RNNLM_Trainer(Solver):
         if dev_ppx < self.best_dev_ppx:
             self.best_dev_ppx  = dev_ppx
             self.verbose('Best val ppx      : {:.4f}       @ step {}'.format(self.best_dev_ppx,self.step))
-            torch.save(self.rnnlm,os.path.join(self.ckpdir,'rnnlm'))
+            #torch.save(self.rnnlm,os.path.join(self.ckpdir,'rnnlm'))
+            torch.save({
+            'step': self.step,
+            'model_state_dict': self.rnnlm.state_dict(),
+            'optimizer_state_dict': self.rnnlm_opt.state_dict(),
+            'loss': self.loss,
+            }, os.path.join(self.ckpdir,'rnnlm'))
 
         self.rnnlm.train()
