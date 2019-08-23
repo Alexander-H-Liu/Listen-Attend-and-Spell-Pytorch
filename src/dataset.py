@@ -116,6 +116,88 @@ class LibriDataset(Dataset):
         return len(self.Y)
 
 
+
+
+class LabeledDataset(Dataset):
+    """
+        Data with both transcrition and label (e.g. emotion, sentiment etc)
+        format:
+        ,file_path,transcrition,label
+    """
+    def __init__(self, file_path, sets, bucket_size, max_timestep=0, max_label_len=0,drop=False,text_only=False):
+        # Read file
+        self.root = file_path
+        tables = [pd.read_csv(os.path.join(file_path,s+'.csv')) for s in sets]
+        self.table = pd.concat(tables,ignore_index=True).sort_values(by=['length'],ascending=False)
+        self.text_only = text_only
+
+        # Crop seqs that are too long
+        if drop and max_timestep >0 and not text_only:
+            self.table = self.table[self.table.length < max_timestep]
+        if drop and max_label_len >0:
+            self.table = self.table[self.table.transcription.str.count('_')+1 < max_label_len]
+
+        X = self.table['file_path'].tolist()
+        X_lens = self.table['length'].tolist()
+      
+        # transcrition labels    
+        Y = [list(map(int, label.split('_'))) for label in self.table['transcription'].tolist()]
+        
+        # label
+        Z = self.table['label'].tolist()
+        print(Z)
+        if text_only:
+            Y.sort(key=len,reverse=True)
+
+        # Bucketing, X & X_len is dummy when text_only==True
+        self.X = []
+        self.Y = []
+        self.Z = []
+        tmp_x,tmp_len,tmp_y, tmp_z = [],[],[], []
+
+        for x,x_len,y,z in zip(X,X_lens,Y,Z):
+            tmp_x.append(x)
+            tmp_len.append(x_len)
+            tmp_y.append(y)
+            tmp_z.append(z)
+            # Half  the batch size if seq too long
+            if len(tmp_x)== bucket_size:
+                if (bucket_size>=2) and ((max(tmp_len)> HALF_BATCHSIZE_TIME) or (max([len(y) for y in tmp_y])>HALF_BATCHSIZE_LABEL)):
+                    self.X.append(tmp_x[:bucket_size//2])
+                    self.X.append(tmp_x[bucket_size//2:])
+                    self.Y.append(tmp_y[:bucket_size//2])
+                    self.Y.append(tmp_y[bucket_size//2:])
+                    self.Z.append(tmp_z[:bucket_size//2])
+                    self.Z.append(tmp_z[bucket_size//2:])
+                else:
+                    self.X.append(tmp_x)
+                    self.Y.append(tmp_y)
+                    self.Z.append(tmp_z)
+                tmp_x,tmp_len,tmp_y, tmp_z = [],[],[], []
+        if len(tmp_x)>0:
+            self.X.append(tmp_x)
+            self.Y.append(tmp_y)
+            self.Z.append(tmp_z)
+
+
+    def __getitem__(self, index):
+        # Load label
+        y = [y for y in self.Y[index]]
+        y = target_padding(y, max([len(v) for v in y]))
+        z = [z for z in self.Z[index]]
+        if self.text_only:
+            return y
+        
+        # Load acoustic feature and pad
+        x = [torch.FloatTensor(np.load(os.path.join(self.root,f))) for f in self.X[index]]
+        x = pad_sequence(x, batch_first=True)
+        #print("hahaha ", y, " lllllio", z)
+        return x,y,z
+            
+    
+    def __len__(self):
+        return len(self.Y)
+
 def LoadDataset(split, text_only, data_path, batch_size, max_timestep, max_label_len, use_gpu, n_jobs,
                 dataset, train_set, dev_set, test_set, dev_batch_size, decode_beam_size,**kwargs):
     if split=='train':
@@ -148,6 +230,9 @@ def LoadDataset(split, text_only, data_path, batch_size, max_timestep, max_label
                            max_label_len=max_label_len, bucket_size=bs)
     elif dataset.upper() =="LIBRISPEECH":
         ds = LibriDataset(file_path=data_path, sets=sets, max_timestep=max_timestep,text_only=text_only,
+                           max_label_len=max_label_len, bucket_size=bs,drop=drop_too_long)
+    elif dataset.upper() =="LABELEDDATA":
+        ds = LabeledDataset(file_path=data_path, sets=sets, max_timestep=max_timestep,text_only=text_only,
                            max_label_len=max_label_len, bucket_size=bs,drop=drop_too_long)
     else:
         raise ValueError('Unsupported Dataset: '+dataset)

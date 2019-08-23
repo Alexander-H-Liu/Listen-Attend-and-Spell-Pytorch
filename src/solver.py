@@ -13,12 +13,27 @@ from src.rnnlm import RNN_LM
 from src.clm import CLM_wrapper
 from src.dataset import LoadDataset
 from src.postprocess import Mapper,cal_acc,cal_cer,draw_att
-
+from src.acoustic_classifier_networks import LSTMClassifier_old
 
 VAL_STEP = 30        # Additional Inference Timesteps to run during validation (to calculate CER)
 TRAIN_WER_STEP = 250 # steps for debugging info.
 GRAD_CLIP = 5
 CLM_MIN_SEQ_LEN = 5
+
+def roc_auc_compute_fn(y_preds, y_targets):
+    try:
+        from sklearn.metrics import roc_auc_score
+    except ImportError:
+        raise RuntimeError("This contrib module requires sklearn to be installed.")
+    
+    y_true = y_targets.numpy()
+    y_pred = y_preds.numpy()[:,1]
+    try:
+        auc = roc_auc_score(y_true, y_pred)
+    except:
+        logging.warning("all values are equal!")
+        auc = 0.5
+    return auc
 
 class Solver():
     ''' Super class Solver for all kinds of tasks'''
@@ -74,15 +89,18 @@ class Trainer(Solver):
         self.verbose('Loading data from '+self.config['solver']['data_path'])
         setattr(self,'train_set',LoadDataset('train',text_only=False,use_gpu=self.paras.gpu,**self.config['solver']))
         setattr(self,'dev_set',LoadDataset('dev',text_only=False,use_gpu=self.paras.gpu,**self.config['solver']))
-        
+       
         # Get 1 example for auto constructing model
-        for self.sample_x,_ in getattr(self,'train_set'):break
+        for self.sample_x,_,_ in getattr(self,'train_set'):break
         if len(self.sample_x.shape)==4: self.sample_x=self.sample_x[0]
 
     def set_model(self):
         ''' Setup ASR (and CLM if enabled)'''
         self.verbose('Init ASR model. Note: validation is done through greedy decoding w/ attention decoder.')
         
+        #self.acoustic_classifier = LSTMClassifier(640, 320, 1, "LSTMCell", 0.0)  #TODO  read from config or compute internally
+        self.acoustic_classifier = LSTMClassifier_old(640) 
+
         # Build attention end-to-end ASR
         self.asr_model = Seq2Seq(self.sample_x,self.mapper.get_dim(),self.config['asr_model']).to(self.device)
         if 'VGG' in self.config['asr_model']['encoder']['enc_type']:
@@ -93,15 +111,19 @@ class Trainer(Solver):
         self.ctc_loss = torch.nn.CTCLoss(blank=0, reduction='mean')
         self.ctc_weight = self.config['asr_model']['optimizer']['joint_ctc']
         
+        self.classification_weight = self.config['asr_model']['optimizer']['classification_weight']
             
         # Setup optimizer
         if self.apex and self.config['asr_model']['optimizer']['type']=='Adam':
             import apex
             self.asr_opt = apex.optimizers.FusedAdam(self.asr_model.parameters(), lr=self.config['asr_model']['optimizer']['learning_rate'])
+            self.ac_classifier_opt = apex.optimizers.FusedAdam(self.acoustic_classifier.parameters(), lr=self.config['acoustic_classification']['optimizer']['learning_rate'])
         else:
             self.asr_opt = getattr(torch.optim,self.config['asr_model']['optimizer']['type'])
             self.asr_opt = self.asr_opt(self.asr_model.parameters(), lr=self.config['asr_model']['optimizer']['learning_rate'],eps=1e-8)
         
+            self.ac_classifier_opt = getattr(torch.optim,self.config['acoustic_classification']['optimizer']['type'])
+            self.ac_classifier_opt = self.ac_classifier_opt(self.acoustic_classifier.parameters(), lr=self.config['acoustic_classification']['optimizer']['learning_rate'],eps=1e-8)
         
         if self.paras.load:
             #raise NotImplementedError
@@ -123,12 +145,27 @@ class Trainer(Solver):
             self.verbose('CLM is enabled with text-only source: '+str(clm_data_config['train_set']))
             self.verbose('Extra text set total '+str(len(self.clm.train_set))+' batches.')
 
+
+        # freeze models
+        #self.asr_model.train(False)
+        print("XXXX  freeezzzzeeee")
+        for p in self.asr_model.parameters():
+            p.requires_grad = False
+        for p in self.asr_model.encoder.parameters():
+            p.requires_grad = True
+
+        for p in self.acoustic_classifier.parameters():
+            p.requires_grad = False
+
     def exec(self):
         ''' Training End-to-end ASR system'''
         self.verbose('Training set total '+str(len(self.train_set))+' batches.')
 
         while self.step< self.max_step:
-            for x,y in self.train_set:
+            
+
+            for x,y, z in self.train_set:
+           
                 self.progress('Training step - '+str(self.step))
                 
                 # Perform teacher forcing rate decaying
@@ -145,14 +182,22 @@ class Trainer(Solver):
 
                 # ASR forwarding 
                 self.asr_opt.zero_grad()
-                ctc_pred, state_len, att_pred, _ =  self.asr_model(x, ans_len,tf_rate=tf_rate,teacher=y,state_len=state_len)
+                self.ac_classifier_opt.zero_grad()
 
-                # Calculate loss function
+                ctc_pred, state_len, att_pred, _,encode_feature =  self.asr_model(x, ans_len,tf_rate=tf_rate,teacher=y,state_len=state_len)
+                
+
+                # Acoustic classifer forwarding and loss
+                logits, class_pred = self.acoustic_classifier(encode_feature, encode_feature.shape[0])
+                self.ac_classification_loss = torch.nn.CrossEntropyLoss()(logits, torch.squeeze(torch.stack(z)).long())
+               
                 loss_log = {}
                 label = y[:,1:ans_len+1].contiguous()
                 ctc_loss = 0
                 att_loss = 0
-                
+
+                loss_log["ac_classification_loss"] = self.ac_classification_loss
+
                 # CE loss on attention decoder
                 if self.ctc_weight<1:
                     b,t,c = att_pred.shape
@@ -168,7 +213,11 @@ class Trainer(Solver):
                     ctc_loss = self.ctc_loss( F.log_softmax( ctc_pred.transpose(0,1),dim=-1), label, torch.LongTensor(state_len), target_len)
                     loss_log['train_ctc'] = ctc_loss
                 
-                self.asr_loss = (1-self.ctc_weight)*att_loss+self.ctc_weight*ctc_loss
+                # ASR loss is composed of both ASR loss and classifiers loss  (with weights)
+                # This allows: 1- learn the asr in a way useful for classification tasks.  2- finetune the asr or encoder in later steps.
+                self.asr_loss = (1- self.classification_weight)*((1-self.ctc_weight)*att_loss+self.ctc_weight*ctc_loss) +   \
+                                         self.classification_weight * self.ac_classification_loss  # TODO add other weights
+
                 loss_log['train_full'] = self.asr_loss
                 
                 # Adversarial loss from CLM
@@ -182,13 +231,24 @@ class Trainer(Solver):
                     self.asr_loss -= adv_feedback
 
                 # Backprop
-                self.asr_loss.backward()
+                # asr
+                self.asr_loss.backward(retain_graph=True)
                 grad_norm = torch.nn.utils.clip_grad_norm_(self.asr_model.parameters(), GRAD_CLIP)
                 if math.isnan(grad_norm):
                     self.verbose('Error : grad norm is NaN @ step '+str(self.step))
                 else:
                     self.asr_opt.step()
                 
+                # acoustic classifier
+                self.ac_classification_loss.backward()
+                grad_norm = torch.nn.utils.clip_grad_norm_(self.acoustic_classifier.parameters(), GRAD_CLIP)
+                if math.isnan(grad_norm):
+                    self.verbose('Error : grad norm is NaN @ step '+str(self.step))
+                else:
+                    self.ac_classifier_opt.step()
+
+
+
                 # Logger
                 self.write_log('loss',loss_log)
                 if self.ctc_weight<1:
@@ -200,6 +260,7 @@ class Trainer(Solver):
                 # Validation
                 if self.step%self.valid_step == 0:
                     self.asr_opt.zero_grad()
+                    self.ac_classifier_opt.zero_grad()
                     self.valid()
 
                 self.step+=1
@@ -217,6 +278,7 @@ class Trainer(Solver):
 
 
     def valid(self):
+    
         '''Perform validation step (!!!NOTE!!! greedy decoding with Attention decoder only)'''
         self.asr_model.eval()
         
@@ -225,8 +287,10 @@ class Trainer(Solver):
         val_len = 0    
         all_pred,all_true = [],[]
         
+        total_acc = 0.0
+        total_auc = 0.0
         # Perform validation
-        for cur_b,(x,y) in enumerate(self.dev_set):
+        for cur_b,(x,y,z) in enumerate(self.dev_set):
             self.progress(' '.join(['Valid step -',str(self.step),'(',str(cur_b),'/',str(len(self.dev_set)),')']))
 
             # Prepare data
@@ -239,7 +303,18 @@ class Trainer(Solver):
             ans_len = int(torch.max(torch.sum(y!=0,dim=-1)))
             
             # Forward
-            ctc_pred, state_len, att_pred, att_maps = self.asr_model(x, ans_len+VAL_STEP,state_len=state_len)
+            ctc_pred, state_len, att_pred, att_maps, encode_feature = self.asr_model(x, ans_len+VAL_STEP,state_len=state_len)
+
+            # Acoustic classifer forwarding and loss
+            logits, class_pred = self.acoustic_classifier(encode_feature, encode_feature.shape[0])
+            val_ac_classification_loss = torch.nn.CrossEntropyLoss()(logits, torch.squeeze(torch.stack(z)).long())
+            target = torch.squeeze(torch.stack(z)).long()
+            num_corrects = (torch.max(class_pred, 1)[1].view(target.size()).data == target.data).sum()
+            acc = 100.0 * num_corrects
+            auc = roc_auc_compute_fn(class_pred.cpu().detach(), target.cpu())
+            #total_epoch_loss += loss.item()
+            total_acc += acc.item()
+            total_auc += auc
 
             # Compute attention loss & get decoding results
             label = y[:,1:ans_len+1].contiguous()
@@ -264,10 +339,26 @@ class Trainer(Solver):
 
             val_len += int(x.shape[0])
         
+
+        avg_acc = total_acc / val_len
+        avg_auc = total_auc / val_len
+
+        acc_log = {}
+        auc_log = {}
+        for k,v in zip(["dev_ac_classification"],[avg_acc]):
+            if v > 0.0: acc_log[k] = v
+        self.write_log('acuracy',acc_log)
+
+        for k,v in zip(["dev_ac_classification"],[avg_auc]):
+            if v > 0.0: auc_log[k] = v
+        self.write_log('AUC', acc_log)
+
         # Logger
-        val_loss = (1-self.ctc_weight)*val_att + self.ctc_weight*val_ctc
+        val_loss = (1 - self.classification_weight) * ((1-self.ctc_weight)*val_att + self.ctc_weight*val_ctc)+ \
+                    self.classification_weight * val_ac_classification_los  # TODO:  add  char loss
+
         loss_log = {}
-        for k,v in zip(['dev_full','dev_ctc','dev_att'],[val_loss, val_ctc, val_att]):
+        for k,v in zip(['dev_full','dev_ctc','dev_att', "dev_ac_classification"],[val_loss, val_ctc, val_att, val_ac_classification_loss]):
             if v > 0.0: loss_log[k] = v/val_len
         self.write_log('loss',loss_log)
  
@@ -422,7 +513,7 @@ class Tester(Solver):
                 ans_len = int(torch.max(torch.sum(y!=0,dim=-1)))
 
                 # Forward
-                ctc_pred, state_len, att_pred, att_maps = self.asr_model(x, ans_len+VAL_STEP,state_len=state_len)
+                ctc_pred, state_len, att_pred, att_maps, _ = self.asr_model(x, ans_len+VAL_STEP,state_len=state_len)
                 ctc_pred = torch.argmax(ctc_pred,dim=-1).cpu() if ctc_pred is not None else None
                 ctc_results.append(ctc_pred)
 

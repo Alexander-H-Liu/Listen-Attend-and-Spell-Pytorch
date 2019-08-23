@@ -27,7 +27,7 @@ class Seq2Seq(nn.Module):
         
         self.joint_ctc = model_para['optimizer']['joint_ctc']>0
         self.joint_att = model_para['optimizer']['joint_ctc']<1
-
+        #print("XXXX ", enc_out_dim)
         # Encoder
         self.encoder = Listener(example_input,**model_para['encoder'])
 
@@ -87,6 +87,7 @@ class Seq2Seq(nn.Module):
                 # Spell (inputs context + embedded last character)                
                 decoder_input = torch.cat([last_char,context],dim=-1)
                 dec_out = self.decoder(decoder_input)
+                #print("XXXX ", decoder_input.shape)
                 
                 # To char
                 cur_char = self.char_trans(dec_out)
@@ -109,7 +110,8 @@ class Seq2Seq(nn.Module):
             att_output = torch.stack(output_char_seq,dim=1)
             att_maps = [torch.stack(att,dim=1) for att in output_att_seq]
 
-        return ctc_output, encode_len, att_output, att_maps
+            
+        return ctc_output, encode_len, att_output, att_maps, encode_feature
 
     def init_parameters(self):
         # Reference : https://github.com/espnet/espnet/blob/master/espnet/nets/e2e_asr_th.py
@@ -208,6 +210,7 @@ class Seq2Seq(nn.Module):
                     attention_score,context = self.attention(self.decoder.state_list[0],encode_feature,encode_len)
                     decoder_input = torch.cat([prev_output.last_char,context],dim=-1)
                     dec_out = self.decoder(decoder_input)
+                    
                     cur_char = F.log_softmax(self.char_trans(dec_out), dim=-1)
 
                     # Perform CTC prefix scoring on limited candidates (else OOM easily)
