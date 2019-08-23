@@ -85,6 +85,8 @@ class LSTMClassifier_old(nn.Module):
 		
 		"""
 		
+		self.device = torch.device('cuda') if (self.paras.gpu and torch.cuda.is_available()) else torch.device('cpu')
+
 		#self.batch_size = batch_size
 		self.output_size = output_size
 		self.hidden_size = hidden_size
@@ -136,7 +138,7 @@ class LSTMClassifier_old(nn.Module):
 		hidden = (weight.new(num_layers, batch_size, self.hidden_size).zero_(), weight.new(num_layers, batch_size, self.hidden_size).zero_())
 
 
-		output, (final_hidden_state, final_cell_state) = self.lstm(input, hidden)
+		output, (final_hidden_state, final_cell_state) = self.lstm(input, hidden.to(self.device))
 		#final_output = self.label(final_hidden_state[-1]) # final_hidden_state.size() = (1, batch_size, hidden_size) & final_output.size() = (batch_size, output_size)
 		
 		final_output = self.dropout_layer(final_hidden_state[-1])
