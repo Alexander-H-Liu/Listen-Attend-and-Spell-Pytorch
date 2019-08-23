@@ -136,9 +136,9 @@ class LSTMClassifier_old(nn.Module):
 	    #   batch_size =  self.batch_size
 		weight = next(self.parameters()).data
 		hidden = (weight.new(num_layers, batch_size, self.hidden_size).zero_(), weight.new(num_layers, batch_size, self.hidden_size).zero_())
+		hidden = (weight.new(num_layers, batch_size, self.hidden_size).zero_().to(self.device), weight.new(num_layers, batch_size, self.hidden_size).zero_().to(self.device))
 
-
-		output, (final_hidden_state, final_cell_state) = self.lstm(input, hidden.to(self.device))
+		output, (final_hidden_state, final_cell_state) = self.lstm(input, hidden)
 		#final_output = self.label(final_hidden_state[-1]) # final_hidden_state.size() = (1, batch_size, hidden_size) & final_output.size() = (batch_size, output_size)
 		
 		final_output = self.dropout_layer(final_hidden_state[-1])
