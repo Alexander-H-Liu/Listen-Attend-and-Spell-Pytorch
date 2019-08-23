@@ -176,6 +176,7 @@ class Trainer(Solver):
                 assert len(y.shape)==3,'Bucketing should cause label have to shape 1xBxT'
                 x = x.squeeze(0).to(device = self.device,dtype=torch.float32)
                 y = y.squeeze(0).to(device = self.device,dtype=torch.long)
+                z = torch.squeeze(torch.stack(z)).long().to(self.device) #z.squeeze(0).to(device = self.device,dtype=torch.long)
                 state_len = np.sum(np.sum(x.cpu().data.numpy(),axis=-1)!=0,axis=-1)
                 state_len = [int(sl) for sl in state_len]
                 ans_len = int(torch.max(torch.sum(y!=0,dim=-1)))
@@ -189,7 +190,7 @@ class Trainer(Solver):
 
                 # Acoustic classifer forwarding and loss
                 logits, class_pred = self.acoustic_classifier(encode_feature, encode_feature.shape[0])
-                self.ac_classification_loss = torch.nn.CrossEntropyLoss()(logits, torch.squeeze(torch.stack(z)).long())
+                self.ac_classification_loss = torch.nn.CrossEntropyLoss()(logits, z)
                
                 loss_log = {}
                 label = y[:,1:ans_len+1].contiguous()
@@ -307,8 +308,8 @@ class Trainer(Solver):
 
             # Acoustic classifer forwarding and loss
             logits, class_pred = self.acoustic_classifier(encode_feature, encode_feature.shape[0])
-            val_ac_classification_loss = torch.nn.CrossEntropyLoss()(logits, torch.squeeze(torch.stack(z)).long())
-            target = torch.squeeze(torch.stack(z)).long()
+            val_ac_classification_loss = torch.nn.CrossEntropyLoss()(logits, z)
+            target = z #torch.squeeze(torch.stack(z)).long()
             num_corrects = (torch.max(class_pred, 1)[1].view(target.size()).data == target.data).sum()
             acc = 100.0 * num_corrects
             auc = roc_auc_compute_fn(class_pred.cpu().detach(), target.cpu())
