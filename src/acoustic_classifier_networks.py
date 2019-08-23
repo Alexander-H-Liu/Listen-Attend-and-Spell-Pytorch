@@ -70,7 +70,7 @@ class LSTMClassifier(nn.Module):
 
 class LSTMClassifier_old(nn.Module):
 
-	def __init__(self, input_dim):
+	def __init__(self, input_dim, device):
 		super(LSTMClassifier_old, self).__init__()
 		
 		"""
@@ -85,7 +85,7 @@ class LSTMClassifier_old(nn.Module):
 		
 		"""
 		
-		self.device = torch.device('cuda') if (self.paras.gpu and torch.cuda.is_available()) else torch.device('cpu')
+		self.device = device
 
 		#self.batch_size = batch_size
 		self.output_size = output_size

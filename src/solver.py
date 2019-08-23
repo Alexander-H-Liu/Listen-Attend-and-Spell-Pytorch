@@ -99,7 +99,7 @@ class Trainer(Solver):
         self.verbose('Init ASR model. Note: validation is done through greedy decoding w/ attention decoder.')
         
         #self.acoustic_classifier = LSTMClassifier(640, 320, 1, "LSTMCell", 0.0)  #TODO  read from config or compute internally
-        self.acoustic_classifier = LSTMClassifier_old(640) 
+        self.acoustic_classifier = LSTMClassifier_old(640, self.device)  #TODO  move the params
 
         # Build attention end-to-end ASR
         self.asr_model = Seq2Seq(self.sample_x,self.mapper.get_dim(),self.config['asr_model']).to(self.device)
