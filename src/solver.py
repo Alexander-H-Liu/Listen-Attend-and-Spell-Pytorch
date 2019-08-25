@@ -14,6 +14,7 @@ from src.clm import CLM_wrapper
 from src.dataset import LoadDataset
 from src.postprocess import Mapper,cal_acc,cal_cer,draw_att
 from src.acoustic_classifier_networks import LSTMClassifier_old
+import logging
 
 VAL_STEP = 30        # Additional Inference Timesteps to run during validation (to calculate CER)
 TRAIN_WER_STEP = 250 # steps for debugging info.
