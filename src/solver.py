@@ -91,7 +91,7 @@ class Trainer(Solver):
         setattr(self,'dev_set',LoadDataset('dev',text_only=False,use_gpu=self.paras.gpu,**self.config['solver']))
        
         # Get 1 example for auto constructing model
-        for self.sample_x,_,_ in getattr(self,'train_set'):break
+        for self.sample_x,_,_,_ in getattr(self,'train_set'):break
         if len(self.sample_x.shape)==4: self.sample_x=self.sample_x[0]
 
     def set_model(self):
@@ -133,7 +133,17 @@ class Trainer(Solver):
             self.step = checkpoint['step']
             self.asr_loss = checkpoint['asr_loss']
             self.asr_model.train()
-            print("model loaded")
+        
+            checkpoint = torch.load(os.path.join(self.ckpdir,'acoustic_classifier'))
+            self.acoustic_classifier.load_state_dict(checkpoint['model_state_dict'])
+            self.ac_classifier_opt.load_state_dict(checkpoint['optimizer_state_dict'])
+            if checkpoint['step'] > self.step:
+                self.step = checkpoint['step']  # TODO whcih step? 
+            self.ac_classification_loss = checkpoint['ac_classification_loss']
+            self.acoustic_classifier.train()
+
+            self.verbos("pretrained models are loaded.")
+            
 
         # Apply CLM
         if self.apply_clm:
@@ -146,16 +156,19 @@ class Trainer(Solver):
             self.verbose('Extra text set total '+str(len(self.clm.train_set))+' batches.')
 
 
-        # freeze models
-        #self.asr_model.train(False)
-        print("XXXX  freeezzzzeeee")
-        for p in self.asr_model.parameters():
-            p.requires_grad = False
-        for p in self.asr_model.encoder.parameters():
-            p.requires_grad = True
-
-        for p in self.acoustic_classifier.parameters():
-            p.requires_grad = False
+        # freeze models 
+        if self.config["full_model"]["asr_decoder_freeze"] is True:
+            for p in self.asr_model.parameters():
+                self.verbose("freeze asr (encoder/decoder).")
+                p.requires_grad = False
+        if self.config["full_model"]["asr_encoder_freeze"] is False:        
+            for p in self.asr_model.encoder.parameters():
+                self.verbose("ubfreeze asr encoder.")
+                p.requires_grad = True
+        if self.config["full_model"]["acoustic_classifier_freeze"] is True: 
+            self.verbose("freeze acoustic classifier")
+            for p in self.acoustic_classifier.parameters():
+                p.requires_grad = False
 
     def exec(self):
         ''' Training End-to-end ASR system'''
@@ -164,7 +177,7 @@ class Trainer(Solver):
         while self.step< self.max_step:
             
 
-            for x,y, z in self.train_set:
+            for x, y, z, fname in self.train_set:
            
                 self.progress('Training step - '+str(self.step))
                 
@@ -291,7 +304,7 @@ class Trainer(Solver):
         total_acc = 0.0
         total_auc = 0.0
         # Perform validation
-        for cur_b,(x,y,z) in enumerate(self.dev_set):
+        for cur_b,(x,y,z, fname) in enumerate(self.dev_set):
             self.progress(' '.join(['Valid step -',str(self.step),'(',str(cur_b),'/',str(len(self.dev_set)),')']))
 
             # Prepare data
@@ -299,6 +312,7 @@ class Trainer(Solver):
             if len(y.shape)==3: y = y.squeeze(0)
             x = x.to(device = self.device,dtype=torch.float32)
             y = y.to(device = self.device,dtype=torch.long)
+            z = torch.squeeze(torch.stack(z)).long().to(self.device) 
             state_len = torch.sum(torch.sum(x.cpu(),dim=-1)!=0,dim=-1)
             state_len = [int(sl) for sl in state_len]
             ans_len = int(torch.max(torch.sum(y!=0,dim=-1)))
@@ -309,6 +323,7 @@ class Trainer(Solver):
             # Acoustic classifer forwarding and loss
             logits, class_pred = self.acoustic_classifier(encode_feature, encode_feature.shape[0])
             val_ac_classification_loss = torch.nn.CrossEntropyLoss()(logits, z)
+
             target = z #torch.squeeze(torch.stack(z)).long()
             num_corrects = (torch.max(class_pred, 1)[1].view(target.size()).data == target.data).sum()
             acc = 100.0 * num_corrects
@@ -343,7 +358,7 @@ class Trainer(Solver):
 
         avg_acc = total_acc / val_len
         avg_auc = total_auc / val_len
-
+        
         acc_log = {}
         auc_log = {}
         for k,v in zip(["dev_ac_classification"],[avg_acc]):
@@ -356,7 +371,7 @@ class Trainer(Solver):
 
         # Logger
         val_loss = (1 - self.classification_weight) * ((1-self.ctc_weight)*val_att + self.ctc_weight*val_ctc)+ \
-                    self.classification_weight * val_ac_classification_los  # TODO:  add  char loss
+                    self.classification_weight * val_ac_classification_loss  # TODO:  add  char loss
 
         loss_log = {}
         for k,v in zip(['dev_full','dev_ctc','dev_att', "dev_ac_classification"],[val_loss, val_ctc, val_att, val_ac_classification_loss]):
@@ -388,6 +403,13 @@ class Trainer(Solver):
                 'asr_loss': self.asr_loss,
                 }, os.path.join(self.ckpdir,'asr'))
 
+                torch.save({
+                'step': self.step,
+                'model_state_dict': self.acoustic_classifier.state_dict(),
+                'optimizer_state_dict': self.ac_classifier_opt.state_dict(),
+                'ac_classification_loss': self.ac_classification_loss,
+                }, os.path.join(self.ckpdir,'acoustic_classifier'))
+
                 if self.apply_clm:
                     torch.save(self.clm.clm,  os.path.join(self.ckpdir,'clm'))
                 # Save hyps.
@@ -398,6 +420,176 @@ class Trainer(Solver):
         self.asr_model.train()
 
 
+class Validator(Solver):
+    """
+        Prediction mode for classifiers.
+        TODO: 
+            1- support mode with no labels (Prediction)
+            2- support online Prediction
+
+    """
+    
+    
+    def __init__(self,config,paras):
+        super(Validator, self).__init__(config, paras)
+        #self.njobs = self.paras.njobs
+        #self.decode_step_ratio = config['solver']['max_decode_step_ratio']
+        
+        #self.decode_file = "_".join(['decode','beam',str(self.config['solver']['decode_beam_size']),
+        #                             'len',str(self.config['solver']['max_decode_step_ratio'])])
+
+    def load_data(self):
+        self.verbose('Loading data for validation'+' from '+self.config['solver']['data_path'])
+        setattr(self,'train_set',LoadDataset('train',text_only=False,use_gpu=self.paras.gpu,**self.config['solver']))
+        setattr(self,'test_set',LoadDataset('test',text_only=False,use_gpu=self.paras.gpu,**self.config['solver']))
+        setattr(self,'dev_set',LoadDataset('dev',text_only=False,use_gpu=self.paras.gpu,**self.config['solver']))
+       
+
+    def set_model(self):
+        ''' Load saved ASR'''
+        self.verbose('Load ASR model from '+os.path.join(self.ckpdir))
+        self.asr_model = torch.load(os.path.join(self.ckpdir,'asr'))
+        
+        # Load Acoustic classifer
+        self.verbose('Load acoustic classifier model from '+os.path.join(self.ckpdir))
+        self.acoustic_classifier = torch.load(os.path.join(self.ckpdir,'acoustic_classifier'))
+
+
+        # Enable joint CTC decoding
+        self.asr_model.joint_ctc = self.config['solver']['decode_ctc_weight'] >0
+        if self.config['solver']['decode_ctc_weight'] >0:
+            assert self.asr_model.joint_ctc, "The ASR was not trained with CTC"
+            self.verbose('Joint CTC decoding is enabled with weight = '+str(self.config['solver']['decode_ctc_weight']))
+            #self.decode_file += '_ctc{:}'.format(self.config['solver']['decode_ctc_weight'])
+            self.asr_model.ctc_weight = self.config['solver']['decode_ctc_weight']
+
+        
+        # TODO: Can we still have RNN decoding?
+        """    
+        # Enable joint RNNLM decoding
+        self.decode_lm = self.config['solver']['decode_lm_weight'] >0
+        setattr(self.asr_model,'decode_lm_weight',self.config['solver']['decode_lm_weight'])
+        if self.decode_lm:
+            assert os.path.exists(self.config['solver']['decode_lm_path']), 'Please specify RNNLM path.'
+            self.asr_model.load_lm(**self.config['solver'])
+            self.verbose('Joint RNNLM decoding is enabled with weight = '+str(self.config['solver']['decode_lm_weight']))
+            self.verbose('Loading RNNLM from '+self.config['solver']['decode_lm_path'])
+            self.decode_file += '_lm{:}'.format(self.config['solver']['decode_lm_weight'])
+        """
+
+
+        # Check models dev performance before inference
+        self.asr_model.eval()
+        self.asr_model.clear_att()
+        self.asr_model = self.asr_model.to(self.device)
+        ####self.verbose('Checking models performance on dev set '+str(self.config['solver']['dev_set'])+'...')
+        ####self.valid()
+        ####self.asr_model = self.asr_model.to('cpu') # move origin model to cpu, clone it to GPU for each thread
+
+        self.acoustic_classifier.eval()
+        self.acoustic_classifier = self.acoustic_classifier.to(self.device)
+
+    #def exec(self):
+    #    '''Perform inference step with beam search decoding.'''
+    #    test_cer = 0.0
+    #    self.decode_beam_size = self.config['solver']['decode_beam_size']
+    #    self.verbose('Start decoding with beam search, beam size = '+str(self.config['solver']['decode_beam_size']))
+    #    self.verbose('Number of utts to decode : {}, decoding with {} threads.'.format(len(self.test_set),self.njobs))
+    #    ## self.test_set = [(x,y) for (x,y) in self.test_set][::10]
+    #    _ = Parallel(n_jobs=self.njobs)(delayed(self.beam_decode)(x[0],y[0].tolist()[0]) for x,y in tqdm(self.test_set))
+    #    
+    #    self.verbose('Decode done, best results at {}.'.format(str(os.path.join(self.ckpdir,self.decode_file+'.txt'))))
+    #    
+    #    self.verbose('Top {} results at {}.'.format(self.config['solver']['decode_beam_size'],
+    #                                               str(os.path.join(self.ckpdir,self.decode_file+'_nbest.txt'))))
+    
+
+
+    def exec(self):
+        '''Perform validation step (!!!NOTE!!! greedy decoding on Attention decoder only)'''
+        val_cer = 0.0
+        val_len = 0    
+        all_pred,all_true = [],[]
+        ctc_results = []
+        total_acc  = 0.0
+        total_auc = 0.0
+        # TODO  add a loop for dev, test, train
+        with torch.no_grad():
+            for sub_set in ["self.train_set", "self.dev_set", "self.test_set"]:
+                sub_set = eval(sub_set)
+                for cur_b,(x, y, z, fname) in enumerate(sub_set):
+                    self.progress(' '.join(['Valid step - (',str(cur_b),'/',str(len(self.dev_set)),')']))
+
+                    # Prepare data
+                    if len(x.shape)==4: x = x.squeeze(0)
+                    if len(y.shape)==3: y = y.squeeze(0)
+                    x = x.to(device = self.device,dtype=torch.float32)
+                    y = y.to(device = self.device,dtype=torch.long)
+                    z = torch.squeeze(torch.stack(z)).long().to(self.device)
+                    fname = list(np.squeeze(fname))
+                    state_len = torch.sum(torch.sum(x.cpu(),dim=-1)!=0,dim=-1)
+                    state_len = [int(sl) for sl in state_len]
+                    ans_len = int(torch.max(torch.sum(y!=0,dim=-1)))
+
+                    # Forward
+                    # TODO:  use estimate way for decode step  not from respone
+                    ctc_pred, state_len, att_pred, att_maps, encode_feature = self.asr_model(x, ans_len+VAL_STEP,state_len=state_len)
+                    ctc_pred = torch.argmax(ctc_pred,dim=-1).cpu() if ctc_pred is not None else None
+                    ctc_results.append(ctc_pred)
+
+                    # Acoustic classifer forwarding and loss
+                    logits, class_pred = self.acoustic_classifier(encode_feature, encode_feature.shape[0])
+                    val_ac_classification_loss = torch.nn.CrossEntropyLoss()(logits, z)
+                    target = z #torch.squeeze(torch.stack(z)).long()
+                    num_corrects = (torch.max(class_pred, 1)[1].view(target.size()).data == target.data).sum()
+                    acc = 100.0 * num_corrects
+                    auc = roc_auc_compute_fn(class_pred.cpu().detach(), target.cpu())
+                    #total_epoch_loss += loss.item()
+                    total_acc += acc.item()
+                    total_auc += auc
+
+                    # Result
+                    label = y[:,1:ans_len+1].contiguous()
+                    t1,t2 = cal_cer(att_pred,label,mapper=self.mapper,get_sentence=True)
+                    all_pred += t1
+                    all_true += t2
+                    val_cer += cal_cer(att_pred,label,mapper=self.mapper)*int(x.shape[0])
+                    val_len += int(x.shape[0])
+
+                    # TODO save results in file
+                    for fi in fname:
+                        print(fi," ", sub_set, " ", class_pred)
+            
+            avg_auc = total_auc / val_len
+            avg_acc = total_acc / val_len
+            # TODO print reports
+            # TODO save asr results in proper files          
+  
+            # TODO: add code to write results and reports
+            """ 
+            # Dump model score to ensure model is corrected
+            self.verbose('Validation Error Rate of Current model : {:.4f}      '.format(val_cer/val_len)) 
+            self.verbose('See {} for validation results.'.format(os.path.join(self.ckpdir,'dev_att_decode.txt'))) 
+            with open(os.path.join(self.ckpdir,'dev_att_decode.txt'),'w') as f:
+                for hyp,gt in zip(all_pred,all_true):
+                    f.write(gt.lstrip()+'\t'+hyp.lstrip()+'\n')
+            
+            # Also dump CTC result if available
+            if ctc_results[0] is not None:
+                ctc_results = [i for ins in ctc_results for i in ins]
+                ctc_text = []
+                for pred in ctc_results:
+                    p = [i for i in pred.tolist() if i != 0]
+                    p = [k for k, g in itertools.groupby(p)]
+                    ctc_text.append(self.mapper.translate(p,return_string=True))
+                self.verbose('Also, see {} for CTC validation results.'.format(os.path.join(self.ckpdir,'dev_ctc_decode.txt'))) 
+                with open(os.path.join(self.ckpdir,'dev_ctc_decode.txt'),'w') as f:
+                    for hyp,gt in zip(ctc_text,all_true):
+                        f.write(gt.lstrip()+'\t'+hyp.lstrip()+'\n')
+            """
+
+# This is only for module using beam-search (slow). (classification is not implemented)
+# predction class is for classification module and use greedy decoding (fast)
 class Tester(Solver):
     ''' Handler for complete inference progress'''
     def __init__(self,config,paras):
