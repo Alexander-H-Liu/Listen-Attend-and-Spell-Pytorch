@@ -36,7 +36,7 @@ if torch.cuda.is_available():
     torch.cuda.set_device(1)  # TODO : set this from cmd/config
 
 if not paras.rnnlm:
-    if not paras.test or not paras.valid:
+    if not paras.test and not paras.valid:
         # Train ASR
         from src.solver import Trainer as Solver
     elif paras.test:

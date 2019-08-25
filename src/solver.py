@@ -295,7 +295,8 @@ class Trainer(Solver):
     
         '''Perform validation step (!!!NOTE!!! greedy decoding with Attention decoder only)'''
         self.asr_model.eval()
-        
+        self.acoustic_classifier.eval()
+
         # Init stats
         val_loss, val_ctc, val_att, val_acc, val_cer = 0.0, 0.0, 0.0, 0.0, 0.0
         val_len = 0    
@@ -418,7 +419,7 @@ class Trainer(Solver):
                         f.write(t1+','+t2+'\n')
 
         self.asr_model.train()
-
+        self.acoustic_classifier.train()
 
 class Validator(Solver):
     """
@@ -448,12 +449,15 @@ class Validator(Solver):
     def set_model(self):
         ''' Load saved ASR'''
         self.verbose('Load ASR model from '+os.path.join(self.ckpdir))
-        self.asr_model = torch.load(os.path.join(self.ckpdir,'asr'))
+        #self.asr_model = torch.load(os.path.join(self.ckpdir,'asr'))
+        self.asr_model = Seq2Seq(self.sample_x,self.mapper.get_dim(),self.config['asr_model']).to(self.device)
+        self.asr_model.load_state_dict(checkpoint['model_state_dict'])
         
         # Load Acoustic classifer
         self.verbose('Load acoustic classifier model from '+os.path.join(self.ckpdir))
-        self.acoustic_classifier = torch.load(os.path.join(self.ckpdir,'acoustic_classifier'))
-
+        self.acoustic_classifier = LSTMClassifier_old(640).to(self.device)  #TODO  move the params
+        #self.acoustic_classifier = torch.load(os.path.join(self.ckpdir,'acoustic_classifier'))
+        self.acoustic_classifier.load_state_dict(checkpoint['model_state_dict'])
 
         # Enable joint CTC decoding
         self.asr_model.joint_ctc = self.config['solver']['decode_ctc_weight'] >0
@@ -562,6 +566,7 @@ class Validator(Solver):
             
             avg_auc = total_auc / val_len
             avg_acc = total_acc / val_len
+            
             # TODO print reports
             # TODO save asr results in proper files          
   
