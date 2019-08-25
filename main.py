@@ -41,7 +41,7 @@ if not paras.rnnlm:
     elif paras.test:
         # Test ASR
         from src.solver import Tester as Solver
-    elif para.valid:
+    elif paras.valid:
         # Valdiation (prediction + some acuracy comutation using labels)
         from src.solver import Validator as Solver
 else:

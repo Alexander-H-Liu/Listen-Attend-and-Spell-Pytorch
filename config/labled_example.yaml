@@ -1,5 +1,5 @@
 full_model:
-  asr_encoder_freeze: False
+  asr_encoder_freeze: True
   asr_decoder_freeze: False
   acoustic_classifier_freeze: False
  
