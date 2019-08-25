@@ -537,8 +537,8 @@ class Validator(Solver):
                     x = x.to(device = self.device,dtype=torch.float32)
                     y = y.to(device = self.device,dtype=torch.long)
                     z = torch.squeeze(torch.stack(z)).long().to(self.device)
-                    if len(fname) > 0:
-                        fname = list(np.squeeze(fname))
+                    #if len(fname) > 0:
+                    #    fname = list(np.squeeze(fname))
                     state_len = torch.sum(torch.sum(x.cpu(),dim=-1)!=0,dim=-1)
                     state_len = [int(sl) for sl in state_len]
                     ans_len = int(torch.max(torch.sum(y!=0,dim=-1)))
