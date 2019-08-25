@@ -62,8 +62,8 @@ solver:
   dataset: 'labeleddata'                      # 
   data_path: 'temp' # Source data path
   n_jobs: 8                                   # Subprocess used for torch Dataloader
-  max_timestep: 0                          # Max length for audio feature (0 for no restriction)
-  max_label_len: 0                          # Max length for output sequence (0 for no restriction)
+  max_timestep: 3000                          # Max length for audio feature (0 for no restriction)
+  max_label_len: 400                          # Max length for output sequence (0 for no restriction)
   # Training options
   train_set: ['labeled_data']              #
   batch_size: 4                             # training batch size

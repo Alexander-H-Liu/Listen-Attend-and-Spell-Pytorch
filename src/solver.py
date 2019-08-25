@@ -158,12 +158,12 @@ class Trainer(Solver):
 
         # freeze models 
         if self.config["full_model"]["asr_decoder_freeze"] is True:
+            self.verbose("freeze asr (encoder/decoder).")
             for p in self.asr_model.parameters():
-                self.verbose("freeze asr (encoder/decoder).")
                 p.requires_grad = False
-        if self.config["full_model"]["asr_encoder_freeze"] is False:        
+        if self.config["full_model"]["asr_encoder_freeze"] is False:       
+            self.verbose("ubfreeze asr encoder.") 
             for p in self.asr_model.encoder.parameters():
-                self.verbose("ubfreeze asr encoder.")
                 p.requires_grad = True
         if self.config["full_model"]["acoustic_classifier_freeze"] is True: 
             self.verbose("freeze acoustic classifier")
