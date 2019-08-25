@@ -20,6 +20,7 @@ parser.add_argument('--seed', default=0, type=int, help='Random seed for reprodu
 parser.add_argument('--njobs', default=1, type=int, help='Number of threads for decoding.', required=False)
 parser.add_argument('--cpu', action='store_true', help='Disable GPU training.')
 parser.add_argument('--test', action='store_true', help='Test the model.')
+parser.add_argument('--valid', action='store_true', help='valid the model.')
 parser.add_argument('--no-msg', action='store_true', help='Hide all messages.')
 parser.add_argument('--rnnlm', action='store_true', help='Option for training RNNLM.')
 paras = parser.parse_args()
