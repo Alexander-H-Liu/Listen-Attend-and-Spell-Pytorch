@@ -454,11 +454,13 @@ class Validator(Solver):
         ''' Load saved ASR'''
         self.verbose('Load ASR model from '+os.path.join(self.ckpdir))
         #self.asr_model = torch.load(os.path.join(self.ckpdir,'asr'))
+        checkpoint = torch.load(os.path.join(self.ckpdir,'asr'))
         self.asr_model = Seq2Seq(self.sample_x,self.mapper.get_dim(),self.config['asr_model']).to(self.device)
         self.asr_model.load_state_dict(checkpoint['model_state_dict'])
         
         # Load Acoustic classifer
         self.verbose('Load acoustic classifier model from '+os.path.join(self.ckpdir))
+        checkpoint = torch.load(os.path.join(self.ckpdir,'acoustic_classifier'))
         self.acoustic_classifier = LSTMClassifier_old(640).to(self.device)  #TODO  move the params
         #self.acoustic_classifier = torch.load(os.path.join(self.ckpdir,'acoustic_classifier'))
         self.acoustic_classifier.load_state_dict(checkpoint['model_state_dict'])
