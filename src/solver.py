@@ -444,7 +444,11 @@ class Validator(Solver):
         setattr(self,'train_set',LoadDataset('train',text_only=False,use_gpu=self.paras.gpu,**self.config['solver']))
         setattr(self,'test_set',LoadDataset('test',text_only=False,use_gpu=self.paras.gpu,**self.config['solver']))
         setattr(self,'dev_set',LoadDataset('dev',text_only=False,use_gpu=self.paras.gpu,**self.config['solver']))
-       
+        
+        # TODO: can we loadthe model simply?
+        # Get 1 example for auto constructing model
+        for self.sample_x,_,_,_ in getattr(self,'train_set'):break
+        if len(self.sample_x.shape)==4: self.sample_x=self.sample_x[0]
 
     def set_model(self):
         ''' Load saved ASR'''
