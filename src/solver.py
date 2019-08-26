@@ -143,7 +143,7 @@ class Trainer(Solver):
             self.ac_classification_loss = checkpoint['ac_classification_loss']
             self.acoustic_classifier.train()
 
-            self.verbos("pretrained models are loaded.")
+            self.verbose("pretrained models are loaded.")
             
 
         # Apply CLM
@@ -175,13 +175,10 @@ class Trainer(Solver):
         ''' Training End-to-end ASR system'''
         self.verbose('Training set total '+str(len(self.train_set))+' batches.')
 
-        while self.step< self.max_step:
-            
-
+        while self.step < self.max_step:
             for x, y, z, fname in self.train_set:
            
                 self.progress('Training step - '+str(self.step))
-                
                 # Perform teacher forcing rate decaying
                 tf_rate = self.tf_start - self.step*(self.tf_start-self.tf_end)/self.max_step
                 
@@ -261,8 +258,6 @@ class Trainer(Solver):
                     self.verbose('Error : grad norm is NaN @ step '+str(self.step))
                 else:
                     self.ac_classifier_opt.step()
-
-
 
                 # Logger
                 self.write_log('loss',loss_log)
@@ -369,7 +364,7 @@ class Trainer(Solver):
 
         for k,v in zip(["dev_ac_classification"],[avg_auc]):
             if v > 0.0: auc_log[k] = v
-        self.write_log('AUC', acc_log)
+        self.write_log('AUC', auc_log)
 
         # Logger
         val_loss = (1 - self.classification_weight) * ((1-self.ctc_weight)*val_att + self.ctc_weight*val_ctc)+ \
@@ -430,23 +425,17 @@ class Validator(Solver):
             2- support online Prediction
 
     """
-    
-    
+
     def __init__(self,config,paras):
         super(Validator, self).__init__(config, paras)
-        #self.njobs = self.paras.njobs
-        #self.decode_step_ratio = config['solver']['max_decode_step_ratio']
         
-        #self.decode_file = "_".join(['decode','beam',str(self.config['solver']['decode_beam_size']),
-        #                             'len',str(self.config['solver']['max_decode_step_ratio'])])
-
     def load_data(self):
         self.verbose('Loading data for validation'+' from '+self.config['solver']['data_path'])
         setattr(self,'train_set',LoadDataset('train',text_only=False,use_gpu=self.paras.gpu,**self.config['solver']))
         setattr(self,'test_set',LoadDataset('test',text_only=False,use_gpu=self.paras.gpu,**self.config['solver']))
         setattr(self,'dev_set',LoadDataset('dev',text_only=False,use_gpu=self.paras.gpu,**self.config['solver']))
         
-        # TODO: can we loadthe model simply?
+        # TODO: can we load the model simply?
         # Get 1 example for auto constructing model
         for self.sample_x,_,_,_ in getattr(self,'train_set'):break
         if len(self.sample_x.shape)==4: self.sample_x=self.sample_x[0]
@@ -524,59 +513,71 @@ class Validator(Solver):
         ctc_results = []
         total_acc  = 0.0
         total_auc = 0.0
-        # TODO  add a loop for dev, test, train
+      
         with torch.no_grad():
-            for sub_set in ["self.train_set", "self.dev_set", "self.test_set"]:
-                sub_set = eval(sub_set)
-                for cur_b,(x, y, z, fname) in enumerate(sub_set):
-                    self.progress(' '.join(['Valid step - (',str(cur_b),'/',str(len(self.dev_set)),')']))
+            with open("XXXXX.out", "w") as fo:  #TODO  get output file from cmd or config
+                fo.write("split,fname,score\n")
+                for sub_set in ["self.train_set", "self.dev_set", "self.test_set"]:
+                    if sub_set == "self.train_set":
+                        split = "train"
+                    elif sub_set == "self.dev_set":
+                        split == "dev"
+                    elif sub_set == "self.test_set":
+                        split = "test"
+                    sub_set = eval(sub_set)
+                    for cur_b,(x, y, z, fname) in enumerate(sub_set):
+                        #self.progress(' '.join(['Valid step - (',str(cur_b),'/',str(len(self.dev_set)),')']))
 
-                    # Prepare data
-                    if len(x.shape)==4: x = x.squeeze(0)
-                    if len(y.shape)==3: y = y.squeeze(0)
-                    x = x.to(device = self.device,dtype=torch.float32)
-                    y = y.to(device = self.device,dtype=torch.long)
-                    z = torch.squeeze(torch.stack(z)).long().to(self.device)
-                    #if len(fname) > 0:
-                    #    fname = list(np.squeeze(fname))
-                    state_len = torch.sum(torch.sum(x.cpu(),dim=-1)!=0,dim=-1)
-                    state_len = [int(sl) for sl in state_len]
-                    ans_len = int(torch.max(torch.sum(y!=0,dim=-1)))
+                        # Prepare data
+                        if len(x.shape)==4: x = x.squeeze(0)
+                        if len(y.shape)==3: y = y.squeeze(0)
+                        x = x.to(device = self.device,dtype=torch.float32)
+                        y = y.to(device = self.device,dtype=torch.long)
+                        z = torch.squeeze(torch.stack(z)).long().to(self.device)
+                        if len(fname) > 0:
+                            fname = list(np.squeeze(fname))
+                        state_len = torch.sum(torch.sum(x.cpu(),dim=-1)!=0,dim=-1)
+                        state_len = [int(sl) for sl in state_len]
+                        ans_len = int(torch.max(torch.sum(y!=0,dim=-1)))
 
-                    # Forward
-                    # TODO:  use estimate way for decode step  not from respone
-                    ctc_pred, state_len, att_pred, att_maps, encode_feature = self.asr_model(x, ans_len+VAL_STEP,state_len=state_len)
-                    ctc_pred = torch.argmax(ctc_pred,dim=-1).cpu() if ctc_pred is not None else None
-                    ctc_results.append(ctc_pred)
+                        # Forward 
+                        max_decode_step =  int(np.ceil(state_len[0]*self.decode_step_ratio)) # TODO is  it correct?
+                        ctc_pred, state_len, att_pred, att_maps, encode_feature = self.asr_model(x, max_decode_step,state_len=state_len)
+                        ctc_pred = torch.argmax(ctc_pred,dim=-1).cpu() if ctc_pred is not None else None
+                        ctc_results.append(ctc_pred)
 
-                    # Acoustic classifer forwarding and loss
-                    logits, class_pred = self.acoustic_classifier(encode_feature, encode_feature.shape[0])
-                    val_ac_classification_loss = torch.nn.CrossEntropyLoss()(logits, z)
-                    target = z #torch.squeeze(torch.stack(z)).long()
-                    num_corrects = (torch.max(class_pred, 1)[1].view(target.size()).data == target.data).sum()
-                    acc = 100.0 * num_corrects
-                    auc = roc_auc_compute_fn(class_pred.cpu().detach(), target.cpu())
-                    #total_epoch_loss += loss.item()
-                    total_acc += acc.item()
-                    total_auc += auc
+                        # Acoustic classifer forwarding and loss
+                        logits, class_pred = self.acoustic_classifier(encode_feature, encode_feature.shape[0])
+                        #val_ac_classification_loss = torch.nn.CrossEntropyLoss()(logits, z)
+                        target = z #torch.squeeze(torch.stack(z)).long()
+                        num_corrects = (torch.max(class_pred, 1)[1].view(target.size()).data == target.data).sum()
+                        acc = 100.0 * num_corrects
+                        auc = roc_auc_compute_fn(class_pred.cpu().detach(), target.cpu())
+                        #total_epoch_loss += loss.item()
+                        total_acc += acc.item()
+                        total_auc += auc
 
-                    # Result
-                    label = y[:,1:ans_len+1].contiguous()
-                    t1,t2 = cal_cer(att_pred,label,mapper=self.mapper,get_sentence=True)
-                    all_pred += t1
-                    all_true += t2
-                    val_cer += cal_cer(att_pred,label,mapper=self.mapper)*int(x.shape[0])
-                    val_len += int(x.shape[0])
+                        # Result
+                        label = y[:,1:ans_len+1].contiguous()
+                        t1,t2 = cal_cer(att_pred,label,mapper=self.mapper,get_sentence=True)
+                        all_pred += t1
+                        all_true += t2
+                        val_cer += cal_cer(att_pred,label,mapper=self.mapper)*int(x.shape[0])
+                        val_len += int(x.shape[0])
 
-                    # TODO save results in file
-                    for fi in fname:
-                        print(fi," ", sub_set, " ", class_pred)
-            
-            avg_auc = total_auc / val_len
-            avg_acc = total_acc / val_len
-            
-            # TODO print reports
-            # TODO save asr results in proper files          
+                        # write fname and scores  (fname shouldbe mapped to ones we need later)
+                        for fi,cp in zip(fname, class_pred.cpu().numpy()):
+                            fo.write(split + "," + fi + "," + cp[1] + "\n")
+                           
+                avg_auc = total_auc / val_len
+                avg_acc = total_acc / val_len
+                # TODO : write to a report file
+                print("split:", split)
+                print("avg. accuracy", avg_acc)
+                print("avg. AUC", avg_auc)
+                
+                # TODO print reports
+                # TODO save asr results in proper files          
   
             # TODO: add code to write results and reports
             """ 

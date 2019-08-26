@@ -78,7 +78,7 @@ solver:
   # Decoding options
   test_set: ['labeled_data']
   max_decode_step_ratio: 0.1
-  decode_beam_size: 20
+  decode_beam_size: 0
   decode_ctc_weight: 0.5
   decode_lm_path: 'result/libri_rnnlm460_sd0/rnnlm'
   decode_lm_weight: 0.5
