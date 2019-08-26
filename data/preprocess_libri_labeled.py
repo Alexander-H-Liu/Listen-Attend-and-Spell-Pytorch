@@ -67,7 +67,7 @@ for line in lines:
     parts = line.split("|")
     spk_id = parts[0].strip()
     gender = 0 if parts[1].strip() == "M" else 1  # 0 male and 1 female
-    id2gender[spk_id] == gender
+    id2gender[spk_id] = gender
 
 # BPE training
 if paras.target == 'subword':
