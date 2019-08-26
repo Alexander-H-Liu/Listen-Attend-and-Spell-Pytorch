@@ -428,6 +428,7 @@ class Validator(Solver):
 
     def __init__(self,config,paras):
         super(Validator, self).__init__(config, paras)
+        self.decode_step_ratio = config['solver']['max_decode_step_ratio']
         
     def load_data(self):
         self.verbose('Loading data for validation'+' from '+self.config['solver']['data_path'])
