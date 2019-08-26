@@ -145,7 +145,7 @@ class LabeledDataset(Dataset):
         
         # label
         Z = self.table['label'].tolist()
-        print(Z)
+       
         if text_only:
             Y.sort(key=len,reverse=True)
 
@@ -191,8 +191,7 @@ class LabeledDataset(Dataset):
         # Load acoustic feature and pad
         x = [torch.FloatTensor(np.load(os.path.join(self.root,f))) for f in self.X[index]]
         x = pad_sequence(x, batch_first=True)
-        #print("XXXX ", self.X[index])
-        #print("hahaha ", y, " lllllio", z)
+       
         return x,y,z, self.X[index]
             
     

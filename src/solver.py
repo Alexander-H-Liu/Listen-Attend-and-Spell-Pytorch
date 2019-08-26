@@ -508,17 +508,18 @@ class Validator(Solver):
 
     def exec(self):
         '''Perform validation step (!!!NOTE!!! greedy decoding on Attention decoder only)'''
-        val_cer = 0.0
-        val_len = 0    
-        all_pred,all_true = [],[]
-        ctc_results = []
-        total_acc  = 0.0
-        total_auc = 0.0
+        
       
         with torch.no_grad():
             with open("XXXXX.out", "w") as fo:  #TODO  get output file from cmd or config
                 fo.write("split,fname,score\n")
                 for sub_set in ["self.train_set", "self.dev_set", "self.test_set"]:
+                    val_cer = 0.0
+                    val_len = 0    
+                    all_pred,all_true = [],[]
+                    ctc_results = []
+                    total_acc  = 0.0
+                    total_auc = 0.0
                     if sub_set == "self.train_set":
                         split = "train"
                     elif sub_set == "self.dev_set":
@@ -570,12 +571,12 @@ class Validator(Solver):
                         for fi,cp in zip(fname, class_pred.cpu().numpy()):
                             fo.write(split + "," + fi + "," + str(cp[1]) + "\n")
                            
-                avg_auc = total_auc / val_len
-                avg_acc = total_acc / val_len
-                # TODO : write to a report file
-                print("split:", split)
-                print("avg. accuracy", avg_acc)
-                print("avg. AUC", avg_auc)
+                    avg_auc = total_auc / val_len
+                    avg_acc = total_acc / val_len
+                    # TODO : write to a report file
+                    print("split:", split)
+                    print("avg. accuracy", avg_acc)
+                    print("avg. AUC", avg_auc)
                 
                 # TODO print reports
                 # TODO save asr results in proper files          
