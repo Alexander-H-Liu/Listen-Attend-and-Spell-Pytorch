@@ -568,7 +568,7 @@ class Validator(Solver):
 
                         # write fname and scores  (fname shouldbe mapped to ones we need later)
                         for fi,cp in zip(fname, class_pred.cpu().numpy()):
-                            fo.write(split + "," + fi + "," + cp[1] + "\n")
+                            fo.write(split + "," + fi + "," + str(cp[1]) + "\n")
                            
                 avg_auc = total_auc / val_len
                 avg_acc = total_acc / val_len
