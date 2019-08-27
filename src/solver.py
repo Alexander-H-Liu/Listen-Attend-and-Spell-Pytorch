@@ -247,7 +247,7 @@ class Trainer(Solver):
                 self.asr_loss.backward(retain_graph=True)
                 grad_norm = torch.nn.utils.clip_grad_norm_(self.asr_model.parameters(), GRAD_CLIP)
                 if math.isnan(grad_norm):
-                    self.verbose('Error : grad norm is NaN @ step '+str(self.step))
+                    self.verbose('Error : grad norm is NaN @ step (asr)'+str(self.step))
                 else:
                     self.asr_opt.step()
                 
@@ -255,7 +255,7 @@ class Trainer(Solver):
                 self.ac_classification_loss.backward()
                 grad_norm = torch.nn.utils.clip_grad_norm_(self.acoustic_classifier.parameters(), GRAD_CLIP)
                 if math.isnan(grad_norm):
-                    self.verbose('Error : grad norm is NaN @ step '+str(self.step))
+                    self.verbose('Error : grad norm is NaN @ step (ac_classifier)'+str(self.step))
                 else:
                     self.ac_classifier_opt.step()
 
