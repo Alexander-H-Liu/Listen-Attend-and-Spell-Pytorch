@@ -244,7 +244,15 @@ class Trainer(Solver):
 
                 # Backprop
                 # asr
-                self.asr_loss.backward(retain_graph=True)
+                #self.asr_loss.backward(retain_graph=True)
+                loss = self.asr_loss + self.ac_classification_loss
+                loss.backward()
+                ## TODO aobe  works?  or:
+                ##self.asr_loss.backward()
+                ##self.ac_classification_loss.backward()
+             
+
+
                 grad_norm = torch.nn.utils.clip_grad_norm_(self.asr_model.parameters(), GRAD_CLIP)
                 if math.isnan(grad_norm):
                     self.verbose('Error : grad norm is NaN @ step (asr)'+str(self.step))
@@ -252,7 +260,7 @@ class Trainer(Solver):
                     self.asr_opt.step()
                 
                 # acoustic classifier
-                self.ac_classification_loss.backward()
+                #self.ac_classification_loss.backward()
                 grad_norm = torch.nn.utils.clip_grad_norm_(self.acoustic_classifier.parameters(), GRAD_CLIP)
                 if math.isnan(grad_norm):
                     self.verbose('Error : grad norm is NaN @ step (ac_classifier)'+str(self.step))
@@ -400,6 +408,7 @@ class Trainer(Solver):
                 'asr_loss': self.asr_loss,
                 }, os.path.join(self.ckpdir,'asr'))
 
+                # TODO  sould be saved byt its own  valdiation measures
                 torch.save({
                 'step': self.step,
                 'model_state_dict': self.acoustic_classifier.state_dict(),
