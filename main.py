@@ -18,6 +18,7 @@ parser.add_argument('--ckpdir', default='result/', type=str, help='Checkpoint/Re
 parser.add_argument('--load', default=None, type=str, help='Load pre-trained model', required=False)
 parser.add_argument('--seed', default=0, type=int, help='Random seed for reproducable results.', required=False)
 parser.add_argument('--njobs', default=1, type=int, help='Number of threads for decoding.', required=False)
+parser.add_argument('--gpu_no', type=int, help='which gpu to use (in case od cpu not effective)', required=True)
 parser.add_argument('--cpu', action='store_true', help='Disable GPU training.')
 parser.add_argument('--test', action='store_true', help='Test the model.')
 parser.add_argument('--valid', action='store_true', help='valid the model.')
@@ -33,7 +34,7 @@ np.random.seed(paras.seed)
 torch.manual_seed(paras.seed)
 if torch.cuda.is_available(): 
     torch.cuda.manual_seed_all(paras.seed)
-    torch.cuda.set_device(2)  # TODO : set this from cmd/config
+    torch.cuda.set_device(paras.gpu_no)  # TODO : set this from cmd/config
 
 if not paras.rnnlm:
     if not paras.test and not paras.valid:

@@ -74,6 +74,7 @@ class Trainer(Solver):
         self.log = SummaryWriter(self.logdir)
         self.valid_step = config['solver']['dev_step']
         self.best_val_ed = 2.0
+        self.best_ac_acoustic_val_auc = 0.0
 
         # Training details
         self.step = 0
@@ -128,15 +129,17 @@ class Trainer(Solver):
         
         if self.paras.load:
             #raise NotImplementedError
-            checkpoint = torch.load(os.path.join(self.ckpdir,'asr'))
+            checkpoint = torch.load(os.path.join(self.ckpdir,'asr'), map_location=self.device)
             self.asr_model.load_state_dict(checkpoint['model_state_dict'])
+            self.asr_model.to(self.device)
             self.asr_opt.load_state_dict(checkpoint['optimizer_state_dict'])
             self.step = checkpoint['step']
             self.asr_loss = checkpoint['asr_loss']
             self.asr_model.train()
         
-            checkpoint = torch.load(os.path.join(self.ckpdir,'acoustic_classifier'))
+            checkpoint = torch.load(os.path.join(self.ckpdir,'acoustic_classifier'), map_location=self.device)
             self.acoustic_classifier.load_state_dict(checkpoint['model_state_dict'])
+            self.acoustic_classifier.to(self.device)
             self.ac_classifier_opt.load_state_dict(checkpoint['optimizer_state_dict'])
             if checkpoint['step'] > self.step:
                 self.step = checkpoint['step']  # TODO whcih step? 
@@ -200,7 +203,14 @@ class Trainer(Solver):
                 
 
                 # Acoustic classifer forwarding and loss
-                logits, class_pred = self.acoustic_classifier(encode_feature, encode_feature.shape[0])
+                # TODO ?  is it correct 
+                # https://discuss.pytorch.org/t/implement-multi-input-multi-head-neural-network-with-different-specific-forward-backpropagation-path/18360
+                # https://discuss.pytorch.org/t/two-optimizers-for-one-model/11085/14
+                temp = encode_feature
+                temp_d = temp.detach()
+                temp_d.requires_grad = True
+                logits, class_pred = self.acoustic_classifier(temp_d, temp_d.shape[0])
+
                 self.ac_classification_loss = torch.nn.CrossEntropyLoss()(logits, z)
                
                 loss_log = {}
@@ -248,12 +258,11 @@ class Trainer(Solver):
                 #loss = self.asr_loss + self.ac_classification_loss
                 #loss.backward()
                 ## TODO aobe  works?  or:
-                self.ac_classification_loss.backward(retain_graph=True)
+                #self.ac_classification_loss.backward(retain_graph=True)
+                # TODO ? why not above?
+                temp.backward(torch.autograd.grad(self.ac_classification_loss, temp_d, only_input=False)[0], retain_graph=True)
                 self.asr_loss.backward()
                 
-             
-
-
                 grad_norm = torch.nn.utils.clip_grad_norm_(self.asr_model.parameters(), GRAD_CLIP)
                 if math.isnan(grad_norm):
                     self.verbose('Error : grad norm is NaN @ step (asr)'+str(self.step))
@@ -309,6 +318,7 @@ class Trainer(Solver):
         
         total_acc = 0.0
         total_auc = 0.0
+        
         # Perform validation
         for cur_b,(x,y,z, fname) in enumerate(self.dev_set):
             self.progress(' '.join(['Valid step -',str(self.step),'(',str(cur_b),'/',str(len(self.dev_set)),')']))
@@ -336,7 +346,7 @@ class Trainer(Solver):
             auc = roc_auc_compute_fn(class_pred.cpu().detach(), target.cpu())
             #total_epoch_loss += loss.item()
             total_acc += acc.item()
-            total_auc += auc
+            total_auc += auc * int(x.shape[0])
 
             # Compute attention loss & get decoding results
             label = y[:,1:ans_len+1].contiguous()
@@ -409,20 +419,32 @@ class Trainer(Solver):
                 'asr_loss': self.asr_loss,
                 }, os.path.join(self.ckpdir,'asr'))
 
-                # TODO  sould be saved byt its own  valdiation measures
-                torch.save({
-                'step': self.step,
-                'model_state_dict': self.acoustic_classifier.state_dict(),
-                'optimizer_state_dict': self.ac_classifier_opt.state_dict(),
-                'ac_classification_loss': self.ac_classification_loss,
-                }, os.path.join(self.ckpdir,'acoustic_classifier'))
-
+                
                 if self.apply_clm:
                     torch.save(self.clm.clm,  os.path.join(self.ckpdir,'clm'))
                 # Save hyps.
                 with open(os.path.join(self.ckpdir,'best_hyp.txt'),'w') as f:
                     for t1,t2 in zip(all_pred,all_true):
                         f.write(t1+','+t2+'\n')
+
+            # save model by auc
+            if avg_auc > self.best_ac_acoustic_val_auc:
+                self.best_ac_acoustic_val_auc = avg_auc
+                self.verbose('Best val auc       : {:.4f}       @ step {}'.format(self.best_ac_acoustic_val_auc, self.step))
+                # TODO  is this better or the above?
+                torch.save({
+                'step': self.step,
+                'model_state_dict': self.asr_model.state_dict(),
+                'optimizer_state_dict': self.asr_opt.state_dict(),
+                'asr_loss': self.asr_loss,
+                }, os.path.join(self.ckpdir,'asr_'))
+
+                torch.save({
+                'step': self.step,
+                'model_state_dict': self.acoustic_classifier.state_dict(),
+                'optimizer_state_dict': self.ac_classifier_opt.state_dict(),
+                'ac_classification_loss': self.ac_classification_loss,
+                }, os.path.join(self.ckpdir,'acoustic_classifier'))
 
         self.asr_model.train()
         self.acoustic_classifier.train()
@@ -455,16 +477,18 @@ class Validator(Solver):
         ''' Load saved ASR'''
         self.verbose('Load ASR model from '+os.path.join(self.ckpdir))
         #self.asr_model = torch.load(os.path.join(self.ckpdir,'asr'))
-        checkpoint = torch.load(os.path.join(self.ckpdir,'asr'))
+        checkpoint = torch.load(os.path.join(self.ckpdir,'asr'), map_location=self.device)
         self.asr_model = Seq2Seq(self.sample_x,self.mapper.get_dim(),self.config['asr_model']).to(self.device)
         self.asr_model.load_state_dict(checkpoint['model_state_dict'])
+        self.asr_model.to(self.device)
         
         # Load Acoustic classifer
         self.verbose('Load acoustic classifier model from '+os.path.join(self.ckpdir))
-        checkpoint = torch.load(os.path.join(self.ckpdir,'acoustic_classifier'))
+        checkpoint = torch.load(os.path.join(self.ckpdir,'acoustic_classifier'), map_location=self.device)
         self.acoustic_classifier = LSTMClassifier_old(640).to(self.device)  #TODO  move the params
         #self.acoustic_classifier = torch.load(os.path.join(self.ckpdir,'acoustic_classifier'))
         self.acoustic_classifier.load_state_dict(checkpoint['model_state_dict'])
+        self.acoustic_classifier.to(self.device)
 
         # Enable joint CTC decoding
         self.asr_model.joint_ctc = self.config['solver']['decode_ctc_weight'] >0
@@ -567,7 +591,7 @@ class Validator(Solver):
                         auc = roc_auc_compute_fn(class_pred.cpu().detach(), target.cpu())
                         #total_epoch_loss += loss.item()
                         total_acc += acc.item()
-                        total_auc += auc
+                        total_auc += auc * int(x.shape[0])
 
                         # Result
                         label = y[:,1:ans_len+1].contiguous()
