@@ -33,7 +33,7 @@ np.random.seed(paras.seed)
 torch.manual_seed(paras.seed)
 if torch.cuda.is_available(): 
     torch.cuda.manual_seed_all(paras.seed)
-    torch.cuda.set_device(1)  # TODO : set this from cmd/config
+    torch.cuda.set_device(2)  # TODO : set this from cmd/config
 
 if not paras.rnnlm:
     if not paras.test and not paras.valid:

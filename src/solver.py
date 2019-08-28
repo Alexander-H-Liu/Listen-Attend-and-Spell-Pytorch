@@ -245,11 +245,11 @@ class Trainer(Solver):
                 # Backprop
                 # asr
                 #self.asr_loss.backward(retain_graph=True)
-                loss = self.asr_loss + self.ac_classification_loss
-                loss.backward()
+                #loss = self.asr_loss + self.ac_classification_loss
+                #loss.backward()
                 ## TODO aobe  works?  or:
-                ##self.asr_loss.backward()
-                ##self.ac_classification_loss.backward()
+                self.asr_loss.backward()
+                self.ac_classification_loss.backward()
              
 
 
