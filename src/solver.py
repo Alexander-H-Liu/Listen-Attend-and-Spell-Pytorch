@@ -260,7 +260,7 @@ class Trainer(Solver):
                 ## TODO aobe  works?  or:
                 #self.ac_classification_loss.backward(retain_graph=True)
                 # TODO ? why not above?
-                temp.backward(torch.autograd.grad(self.ac_classification_loss, temp_d, only_input=False)[0], retain_graph=True)
+                temp.backward(torch.autograd.grad(self.ac_classification_loss, temp_d, only_inputs=False)[0], retain_graph=True)
                 self.asr_loss.backward()
                 
                 grad_norm = torch.nn.utils.clip_grad_norm_(self.asr_model.parameters(), GRAD_CLIP)
