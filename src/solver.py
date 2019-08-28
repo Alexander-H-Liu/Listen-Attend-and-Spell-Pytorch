@@ -208,7 +208,7 @@ class Trainer(Solver):
                 # https://discuss.pytorch.org/t/two-optimizers-for-one-model/11085/14
                 temp = encode_feature
                 temp_d = temp.detach()
-                temp_d.requires_grad = True
+                temp_d.requires_grad = False # or True?
                 logits, class_pred = self.acoustic_classifier(temp_d, temp_d.shape[0])
 
                 self.ac_classification_loss = torch.nn.CrossEntropyLoss()(logits, z)
