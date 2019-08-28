@@ -208,7 +208,7 @@ class Trainer(Solver):
                 # https://discuss.pytorch.org/t/two-optimizers-for-one-model/11085/14
                 temp = encode_feature
                 temp_d = temp.detach()
-                temp_d.requires_grad = False # or True?
+                temp_d.requires_grad = True
                 logits, class_pred = self.acoustic_classifier(temp_d, temp_d.shape[0])
 
                 self.ac_classification_loss = torch.nn.CrossEntropyLoss()(logits, z)
@@ -258,9 +258,9 @@ class Trainer(Solver):
                 #loss = self.asr_loss + self.ac_classification_loss
                 #loss.backward()
                 ## TODO aobe  works?  or:
-                #self.ac_classification_loss.backward(retain_graph=True)
+                self.ac_classification_loss.backward(retain_graph=True)
                 # TODO ? why not above?
-                temp.backward(torch.autograd.grad(self.ac_classification_loss, temp_d, only_inputs=False, retain_graph=True)[0], retain_graph=True)
+                #temp.backward(torch.autograd.grad(self.ac_classification_loss, temp_d, only_inputs=False, retain_graph=True)[0], retain_graph=True)
                 self.asr_loss.backward()
                 
                 grad_norm = torch.nn.utils.clip_grad_norm_(self.asr_model.parameters(), GRAD_CLIP)
