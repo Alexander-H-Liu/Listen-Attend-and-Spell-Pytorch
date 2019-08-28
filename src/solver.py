@@ -248,8 +248,9 @@ class Trainer(Solver):
                 #loss = self.asr_loss + self.ac_classification_loss
                 #loss.backward()
                 ## TODO aobe  works?  or:
+                self.ac_classification_loss.backward(retain_graph=True)
                 self.asr_loss.backward()
-                self.ac_classification_loss.backward()
+                
              
 
 
