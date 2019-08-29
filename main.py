@@ -5,6 +5,7 @@ import torch
 import random
 import argparse
 import numpy as np
+import os
 
 # Make cudnn CTC deterministic
 torch.backends.cudnn.deterministic = True
@@ -34,6 +35,7 @@ np.random.seed(paras.seed)
 torch.manual_seed(paras.seed)
 if torch.cuda.is_available(): 
     torch.cuda.manual_seed_all(paras.seed)
+    os.environ["CUDA_VISIBLE_DEVICES"]=str(paras.gpu_no)
     torch.cuda.set_device(paras.gpu_no)  # TODO : set this from cmd/config
 
 if not paras.rnnlm:
