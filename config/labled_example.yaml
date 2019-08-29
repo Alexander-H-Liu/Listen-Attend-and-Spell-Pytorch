@@ -32,8 +32,8 @@ asr_model:
 
 acoustic_classification:
   optimizer:
-    type: 'Adam'                              # Optimizer used for training (adam)
-    learning_rate: 1                     # Learning rate for opt
+    type: 'Adadelta'                              # Optimizer used for training (adam)
+    learning_rate: 1                          # Learning rate for opt
 
   model_type: LSTM   #LSTM, LSTM with attention, self_attention, CNN, RCNN
   # LSTM params

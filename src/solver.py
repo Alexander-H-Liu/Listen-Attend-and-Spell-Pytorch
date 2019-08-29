@@ -118,15 +118,20 @@ class Trainer(Solver):
         # Setup optimizer
         if self.apex and self.config['asr_model']['optimizer']['type']=='Adam':
             import apex
-            self.asr_opt = apex.optimizers.FusedAdam(self.asr_model.parameters(), lr=self.config['asr_model']['optimizer']['learning_rate'])
-            self.ac_classifier_opt = apex.optimizers.FusedAdam(self.acoustic_classifier.parameters(), lr=self.config['acoustic_classification']['optimizer']['learning_rate'])
+            self.asr_opt = apex.optimizers.FusedAdam(self.asr_model.parameters(), lr=self.config['asr_model']['optimizer']['learning_rate'])   
         else:
             self.asr_opt = getattr(torch.optim,self.config['asr_model']['optimizer']['type'])
             self.asr_opt = self.asr_opt(self.asr_model.parameters(), lr=self.config['asr_model']['optimizer']['learning_rate'],eps=1e-8)
         
+        
+        if self.apex and self.config['acoustic_classification']['optimizer']['type']=='Adam':
+            import apex 
+            self.ac_classifier_opt = apex.optimizers.FusedAdam(self.acoustic_classifier.parameters(), lr=self.config['acoustic_classification']['optimizer']['learning_rate'])
+        else:
             self.ac_classifier_opt = getattr(torch.optim,self.config['acoustic_classification']['optimizer']['type'])
             self.ac_classifier_opt = self.ac_classifier_opt(self.acoustic_classifier.parameters(), lr=self.config['acoustic_classification']['optimizer']['learning_rate'],eps=1e-8)
         
+
         if self.paras.load:
             #raise NotImplementedError
             checkpoint = torch.load(os.path.join(self.ckpdir,'asr'), map_location=self.device)
@@ -318,8 +323,8 @@ class Trainer(Solver):
         
         total_acc = 0.0
         total_auc = 0.0
-        
-        # Perform validation
+        val_ac_classification_loss = 0.0
+        # Perform va idation
         for cur_b,(x,y,z, fname) in enumerate(self.dev_set):
             self.progress(' '.join(['Valid step -',str(self.step),'(',str(cur_b),'/',str(len(self.dev_set)),')']))
 
@@ -337,8 +342,15 @@ class Trainer(Solver):
             ctc_pred, state_len, att_pred, att_maps, encode_feature = self.asr_model(x, ans_len+VAL_STEP,state_len=state_len)
 
             # Acoustic classifer forwarding and loss
-            logits, class_pred = self.acoustic_classifier(encode_feature, encode_feature.shape[0])
-            val_ac_classification_loss = torch.nn.CrossEntropyLoss()(logits, z)
+            # TODO ?  is it correct 
+            # https://discuss.pytorch.org/t/implement-multi-input-multi-head-neural-network-with-different-specific-forward-backpropagation-path/18360
+            # https://discuss.pytorch.org/t/two-optimizers-for-one-model/11085/14
+            temp = encode_feature
+            temp_d = temp.detach()
+            temp_d.requires_grad = True
+            logits, class_pred = self.acoustic_classifier(temp_d, temp_d.shape[0])
+            ##logits, class_pred = self.acoustic_classifier(encode_feature, encode_feature.shape[0])
+            val_ac_classification_loss += torch.nn.CrossEntropyLoss()(logits, z) * int(x.shape[0])
 
             target = z #torch.squeeze(torch.stack(z)).long()
             num_corrects = (torch.max(class_pred, 1)[1].view(target.size()).data == target.data).sum()
@@ -377,11 +389,11 @@ class Trainer(Solver):
         
         acc_log = {}
         auc_log = {}
-        for k,v in zip(["dev_ac_classification"],[avg_acc]):
+        for k,v in zip(["dev_ac_classification"], [avg_acc]):
             if v > 0.0: acc_log[k] = v
         self.write_log('acuracy',acc_log)
 
-        for k,v in zip(["dev_ac_classification"],[avg_auc]):
+        for k,v in zip(["dev_ac_classification"], [avg_auc]):
             if v > 0.0: auc_log[k] = v
         self.write_log('AUC', auc_log)
 
@@ -390,7 +402,8 @@ class Trainer(Solver):
                     self.classification_weight * val_ac_classification_loss  # TODO:  add  char loss
 
         loss_log = {}
-        for k,v in zip(['dev_full','dev_ctc','dev_att', "dev_ac_classification"],[val_loss, val_ctc, val_att, val_ac_classification_loss]):
+        loss_log["dev_ac_classification"] = val_ac_classification_loss / val_len
+        for k,v in zip(['dev_full','dev_ctc','dev_att'],[val_loss, val_ctc, val_att]):
             if v > 0.0: loss_log[k] = v/val_len
         self.write_log('loss',loss_log)
  
