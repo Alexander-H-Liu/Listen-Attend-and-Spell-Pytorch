@@ -42,7 +42,8 @@ class Solver():
         # General Settings
         self.config = config
         self.paras = paras
-        self.device = torch.device('cuda') if (self.paras.gpu and torch.cuda.is_available()) else torch.device('cpu')
+        gpu_no = str(paras.gpu_no)
+        self.device = torch.device('cuda:' + gpu_no) if (self.paras.gpu and torch.cuda.is_available()) else torch.device('cpu')
 
         self.exp_name = paras.name
         if self.exp_name is None:
@@ -475,6 +476,7 @@ class Validator(Solver):
         super(Validator, self).__init__(config, paras)
         self.decode_step_ratio = config['solver']['max_decode_step_ratio']
         
+
     def load_data(self):
         self.verbose('Loading data for validation'+' from '+self.config['solver']['data_path'])
         setattr(self,'train_set',LoadDataset('train',text_only=False,use_gpu=self.paras.gpu,**self.config['solver']))
@@ -488,6 +490,7 @@ class Validator(Solver):
 
     def set_model(self):
         ''' Load saved ASR'''
+        print("***** ", self.device)
         self.verbose('Load ASR model from '+os.path.join(self.ckpdir))
         #self.asr_model = torch.load(os.path.join(self.ckpdir,'asr'))
         checkpoint = torch.load(os.path.join(self.ckpdir,'asr'), map_location=self.device)
