@@ -13,7 +13,7 @@ from src.rnnlm import RNN_LM
 from src.clm import CLM_wrapper
 from src.dataset import LoadDataset
 from src.postprocess import Mapper,cal_acc,cal_cer,draw_att
-from src.acoustic_classifier_networks import LSTMClassifier_old
+from src.acoustic_classifier_networks import LSTMClassifier
 import logging
 
 VAL_STEP = 30        # Additional Inference Timesteps to run during validation (to calculate CER)
@@ -102,7 +102,7 @@ class Trainer(Solver):
         self.verbose('Init ASR model. Note: validation is done through greedy decoding w/ attention decoder.')
         
         #self.acoustic_classifier = LSTMClassifier(640, 320, 1, "LSTMCell", 0.0)  #TODO  read from config or compute internally
-        self.acoustic_classifier = LSTMClassifier_old(640).to(self.device)  #TODO  move the params
+        self.acoustic_classifier = LSTMClassifier(self.config['acoustic_classification'], self.config['asr_model']).to(self.device)  #TODO  move the params
 
         # Build attention end-to-end ASR
         self.asr_model = Seq2Seq(self.sample_x,self.mapper.get_dim(),self.config['asr_model']).to(self.device)
@@ -501,7 +501,7 @@ class Validator(Solver):
         # Load Acoustic classifer
         self.verbose('Load acoustic classifier model from '+os.path.join(self.ckpdir))
         checkpoint = torch.load(os.path.join(self.ckpdir,'acoustic_classifier'), map_location=self.device)
-        self.acoustic_classifier = LSTMClassifier_old(640).to(self.device)  #TODO  move the params
+        self.acoustic_classifier = LSTMClassifier(self.config['acoustic_classification'], self.config['asr_model']).to(self.device)  #TODO  move the params
         #self.acoustic_classifier = torch.load(os.path.join(self.ckpdir,'acoustic_classifier'))
         self.acoustic_classifier.load_state_dict(checkpoint['model_state_dict'])
         self.acoustic_classifier.to(self.device)
@@ -573,7 +573,7 @@ class Validator(Solver):
                     if sub_set == "self.train_set":
                         split = "train"
                     elif sub_set == "self.dev_set":
-                        split == "dev"
+                        split = "dev"
                     elif sub_set == "self.test_set":
                         split = "test"
                     sub_set = eval(sub_set)

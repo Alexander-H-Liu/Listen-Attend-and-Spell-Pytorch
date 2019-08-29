@@ -31,6 +31,10 @@ asr_model:
     rnn_cell: 'LSTMCell'                      # Only LSTMCell is availible now.
 
 acoustic_classification:
+  lstm_hidden_size: 512
+  lstm_num_layers: 2
+  lstm_rnn_dropout: .5
+  lstm_final_dropout: 0.7 
   optimizer:
     type: 'Adadelta'                              # Optimizer used for training (adam)
     learning_rate: 1                          # Learning rate for opt
