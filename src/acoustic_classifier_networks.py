@@ -51,7 +51,7 @@ class LSTMClassifier(nn.Module):
 		self.num_layers = model_para["lstm_num_layers"]
 		rnn_dropout = model_para["lstm_rnn_dropout"]
 		self.hidden_size = model_para["lstm_hidden_size"]
-		last_dropout = model_para["lstm_last_dropout"]
+		last_dropout = model_para["lstm_final_dropout"]
 
 		#self.embedding_length = embedding_length
 		
