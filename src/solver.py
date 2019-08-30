@@ -140,7 +140,7 @@ class Trainer(Solver):
             #raise NotImplementedError
 
             #checkpoint = torch.load(os.path.join(self.ckpdir,'asr'), map_location=self.device)
-            if  self.asr_model_file not None:
+            if  self.asr_model_file is not None:
                 checkpoint = torch.load(self.asr_model_file, map_location=self.device)
                 self.asr_model.load_state_dict(checkpoint['model_state_dict'])
                 self.asr_model.to(self.device)
@@ -152,7 +152,7 @@ class Trainer(Solver):
                 self.verbose("ASR model trains from sctrach!")
         
             #checkpoint = torch.load(os.path.join(self.ckpdir,'acoustic_classifier'), map_location=self.device)
-            if self.acoustic_classifier_model_file not None:
+            if self.acoustic_classifier_model_file is not None:
                 checkpoint = torch.load(self.acoustic_classifier_model_file, map_location=self.device)
                 self.acoustic_classifier.load_state_dict(checkpoint['model_state_dict'])
                 self.acoustic_classifier.to(self.device)
