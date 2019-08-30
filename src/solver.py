@@ -148,6 +148,7 @@ class Trainer(Solver):
                 self.step = checkpoint['step']
                 self.asr_loss = checkpoint['asr_loss']
                 self.asr_model.train()
+                self.verbose("ASR model is loaded!")
             else:
                 self.verbose("ASR model trains from sctrach!")
         
@@ -161,12 +162,13 @@ class Trainer(Solver):
                     self.step = checkpoint['step']  # TODO whcih step? 
                 self.ac_classification_loss = checkpoint['ac_classification_loss']
                 self.acoustic_classifier.train()
+                self.verbose("Acoustic classifier is loaded")
             else: 
                 self.verbose("Acoustic classifier trains from scratch")
 
             if  self.acoustic_classifier_model_file is None or self.asr_model_file is None:
                 self.step = 0
-                self.verbose("step set to 0.")
+                self.verbose("step set to 0.") 
 
             self.verbose("pretrained models are loaded.")
             
