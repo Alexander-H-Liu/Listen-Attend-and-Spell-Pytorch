@@ -137,15 +137,25 @@ class Trainer(Solver):
         
 
         if self.paras.load:
-            #raise NotImplementedError
+            
+            start_over = False
+            if  self.acoustic_classifier_model_file is None or self.asr_model_file is None:
+                self.step = 0  #TODO is this correct?
+                self.verbose("step set to 0.") 
+                start_over = True
 
             #checkpoint = torch.load(os.path.join(self.ckpdir,'asr'), map_location=self.device)
             if  self.asr_model_file is not None:
                 checkpoint = torch.load(self.asr_model_file, map_location=self.device)
                 self.asr_model.load_state_dict(checkpoint['model_state_dict'])
                 self.asr_model.to(self.device)
+                if start_over is True:
+                    checkpoint['optimizer_state_dict']["step"] = self.step
+                else:
+                    self.step = checkpoint['step']
+
                 self.asr_opt.load_state_dict(checkpoint['optimizer_state_dict'])
-                self.step = checkpoint['step']
+                
                 self.asr_loss = checkpoint['asr_loss']
                 self.asr_model.train()
                 self.verbose("ASR model is loaded!")
@@ -158,17 +168,22 @@ class Trainer(Solver):
                 self.acoustic_classifier.load_state_dict(checkpoint['model_state_dict'])
                 self.acoustic_classifier.to(self.device)
                 self.ac_classifier_opt.load_state_dict(checkpoint['optimizer_state_dict'])
-                if checkpoint['step'] > self.step:
-                    self.step = checkpoint['step']  # TODO whcih step? 
+                if start_over is True:
+                    checkpoint['optimizer_state_dict']["step"] = self.step
+                else:
+                    self.step = checkpoint['step']
+
+                #if checkpoint['step'] > self.step:
+                #    self.step = checkpoint['step']  # TODO whcih step? 
                 self.ac_classification_loss = checkpoint['ac_classification_loss']
                 self.acoustic_classifier.train()
                 self.verbose("Acoustic classifier is loaded")
             else: 
                 self.verbose("Acoustic classifier trains from scratch")
 
-            if  self.acoustic_classifier_model_file is None or self.asr_model_file is None:
-                self.step = 0
-                self.verbose("step set to 0.") 
+            #if  self.acoustic_classifier_model_file is None or self.asr_model_file is None:
+            #    self.step = 0
+            #    self.verbose("step set to 0.")  # TODO  not working: switch back to saved number and back again print garbage in log
 
             self.verbose("pretrained models are loaded.")
             
