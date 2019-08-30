@@ -55,6 +55,9 @@ class Solver():
         # Load Mapper for idx2token
         self.mapper = Mapper(config['solver']['data_path'])
 
+        self.asr_model_file = paras.asr_model_file
+        self.acoustic_classifier_model_file = paras.acoustic_classifier_model_file
+
     def verbose(self,msg):
         ''' Verbose function for print information to stdout'''
         if self.paras.verbose:
@@ -135,22 +138,35 @@ class Trainer(Solver):
 
         if self.paras.load:
             #raise NotImplementedError
-            checkpoint = torch.load(os.path.join(self.ckpdir,'asr'), map_location=self.device)
-            self.asr_model.load_state_dict(checkpoint['model_state_dict'])
-            self.asr_model.to(self.device)
-            self.asr_opt.load_state_dict(checkpoint['optimizer_state_dict'])
-            self.step = checkpoint['step']
-            self.asr_loss = checkpoint['asr_loss']
-            self.asr_model.train()
+
+            #checkpoint = torch.load(os.path.join(self.ckpdir,'asr'), map_location=self.device)
+            if  self.asr_model_file not None:
+                checkpoint = torch.load(self.asr_model_file, map_location=self.device)
+                self.asr_model.load_state_dict(checkpoint['model_state_dict'])
+                self.asr_model.to(self.device)
+                self.asr_opt.load_state_dict(checkpoint['optimizer_state_dict'])
+                self.step = checkpoint['step']
+                self.asr_loss = checkpoint['asr_loss']
+                self.asr_model.train()
+            else:
+                self.verbose("ASR model trains from sctrach!")
         
-            checkpoint = torch.load(os.path.join(self.ckpdir,'acoustic_classifier'), map_location=self.device)
-            self.acoustic_classifier.load_state_dict(checkpoint['model_state_dict'])
-            self.acoustic_classifier.to(self.device)
-            self.ac_classifier_opt.load_state_dict(checkpoint['optimizer_state_dict'])
-            if checkpoint['step'] > self.step:
-                self.step = checkpoint['step']  # TODO whcih step? 
-            self.ac_classification_loss = checkpoint['ac_classification_loss']
-            self.acoustic_classifier.train()
+            #checkpoint = torch.load(os.path.join(self.ckpdir,'acoustic_classifier'), map_location=self.device)
+            if self.acoustic_classifier_model_file not None:
+                checkpoint = torch.load(self.acoustic_classifier_model_file, map_location=self.device)
+                self.acoustic_classifier.load_state_dict(checkpoint['model_state_dict'])
+                self.acoustic_classifier.to(self.device)
+                self.ac_classifier_opt.load_state_dict(checkpoint['optimizer_state_dict'])
+                if checkpoint['step'] > self.step:
+                    self.step = checkpoint['step']  # TODO whcih step? 
+                self.ac_classification_loss = checkpoint['ac_classification_loss']
+                self.acoustic_classifier.train()
+            else: 
+                self.verbose("Acoustic classifier trains from scratch")
+
+            if  self.acoustic_classifier_model_file is None or self.asr_model_file is None:
+                self.step = 0
+                self.verbose("step set to 0.")
 
             self.verbose("pretrained models are loaded.")
             
@@ -431,8 +447,14 @@ class Trainer(Solver):
                 'model_state_dict': self.asr_model.state_dict(),
                 'optimizer_state_dict': self.asr_opt.state_dict(),
                 'asr_loss': self.asr_loss,
-                }, os.path.join(self.ckpdir,'asr'))
-
+                }, os.path.join(self.ckpdir,'asr_asrpoint'))
+                
+                torch.save({
+                'step': self.step,
+                'model_state_dict': self.acoustic_classifier.state_dict(),
+                'optimizer_state_dict': self.ac_classifier_opt.state_dict(),
+                'ac_classification_loss': self.ac_classification_loss,
+                }, os.path.join(self.ckpdir,'acoustic_classifier_asrpoint'))
                 
                 if self.apply_clm:
                     torch.save(self.clm.clm,  os.path.join(self.ckpdir,'clm'))
@@ -451,14 +473,14 @@ class Trainer(Solver):
                 'model_state_dict': self.asr_model.state_dict(),
                 'optimizer_state_dict': self.asr_opt.state_dict(),
                 'asr_loss': self.asr_loss,
-                }, os.path.join(self.ckpdir,'asr_'))
+                }, os.path.join(self.ckpdir,'asr_acpoint'))
 
                 torch.save({
                 'step': self.step,
                 'model_state_dict': self.acoustic_classifier.state_dict(),
                 'optimizer_state_dict': self.ac_classifier_opt.state_dict(),
                 'ac_classification_loss': self.ac_classification_loss,
-                }, os.path.join(self.ckpdir,'acoustic_classifier'))
+                }, os.path.join(self.ckpdir,'acoustic_classifier_acpoint'))
 
         self.asr_model.train()
         self.acoustic_classifier.train()
@@ -493,14 +515,16 @@ class Validator(Solver):
         print("***** ", self.device)
         self.verbose('Load ASR model from '+os.path.join(self.ckpdir))
         #self.asr_model = torch.load(os.path.join(self.ckpdir,'asr'))
-        checkpoint = torch.load(os.path.join(self.ckpdir,'asr'), map_location=self.device)
+        #checkpoint = torch.load(os.path.join(self.ckpdir,'asr'), map_location=self.device)
+        checkpoint = torch.load(self.asr_model_file, map_location=self.device)
         self.asr_model = Seq2Seq(self.sample_x,self.mapper.get_dim(),self.config['asr_model']).to(self.device)
         self.asr_model.load_state_dict(checkpoint['model_state_dict'])
         self.asr_model.to(self.device)
         
         # Load Acoustic classifer
         self.verbose('Load acoustic classifier model from '+os.path.join(self.ckpdir))
-        checkpoint = torch.load(os.path.join(self.ckpdir,'acoustic_classifier'), map_location=self.device)
+        #checkpoint = torch.load(os.path.join(self.ckpdir,'acoustic_classifier'), map_location=self.device)
+        checkpoint = torch.load(self.acoustic_classifier_model_file, map_location=self.device)
         self.acoustic_classifier = LSTMClassifier(self.config['acoustic_classification'], self.config['asr_model']).to(self.device)  #TODO  move the params
         #self.acoustic_classifier = torch.load(os.path.join(self.ckpdir,'acoustic_classifier'))
         self.acoustic_classifier.load_state_dict(checkpoint['model_state_dict'])
