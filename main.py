@@ -39,7 +39,7 @@ np.random.seed(paras.seed)
 torch.manual_seed(paras.seed)
 if torch.cuda.is_available(): 
     torch.cuda.manual_seed_all(paras.seed)
-    ptint("GPU NO: " + str(paras.gpu_no))
+    print("GPU NO: " + str(paras.gpu_no))
     os.environ["CUDA_VISIBLE_DEVICES"]=str(paras.gpu_no)
     torch.cuda.set_device(paras.gpu_no)  # TODO : set this from cmd/config
 
