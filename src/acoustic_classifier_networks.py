@@ -24,7 +24,7 @@ output_size = 2
 
 class LSTMClassifier(nn.Module):
 
-	def __init__(self, model_para, asr_model_para):
+	def __init__(self, example, model_para, asr_model_para):
 		super(LSTMClassifier, self).__init__()
 		
 		"""
@@ -42,6 +42,9 @@ class LSTMClassifier(nn.Module):
                       *max(1,2*('Bi' in asr_model_para['encoder']['enc_type']))\
                       *max(1,int(asr_model_para['encoder']['sample_rate'].split('_')[-1])\
                            *('concat'== asr_model_para['encoder']['sample_style']))
+
+		if model_para["input"] == "VGG":
+			_,_, enc_out_dim = self.check_dim(example)
 
 		###self.device = device
 
@@ -66,7 +69,17 @@ class LSTMClassifier(nn.Module):
 		self.dropout_layer = nn.Dropout(p=last_dropout)
 
 
-    
+    def check_dim(self, example_input):
+        d = example_input.shape[-1]
+        if d%13 == 0:
+            # MFCC feature
+            return int(d/13),13,(13//4)*128
+        elif d%40 == 0:
+            # Fbank feature
+            return int(d/40),40,(40//4)*128
+        else:
+            raise ValueError('Acoustic feature dimension for VGG should be 13/
+
     
 	def forward(self, input_sentence, batch_size):
 	
