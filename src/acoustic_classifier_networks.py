@@ -69,16 +69,16 @@ class LSTMClassifier(nn.Module):
 		self.dropout_layer = nn.Dropout(p=last_dropout)
 
 
-    def check_dim(self, example_input):
-        d = example_input.shape[-1]
-        if d%13 == 0:
-            # MFCC feature
-            return int(d/13),13,(13//4)*128
-        elif d%40 == 0:
-            # Fbank feature
-            return int(d/40),40,(40//4)*128
-        else:
-            raise ValueError('Acoustic feature dimension for VGG should be 13/
+	def check_dim(self, example_input):
+		d = example_input.shape[-1]
+		if d%13 == 0:
+			# MFCC feature
+			return int(d/13),13,(13//4)*128
+		elif d%40 == 0:
+			# Fbank feature
+			return int(d/40),40,(40//4)*128
+		else:
+			raise ValueError('Acoustic feature dimension for VGG should be 13/
 
     
 	def forward(self, input_sentence, batch_size):
