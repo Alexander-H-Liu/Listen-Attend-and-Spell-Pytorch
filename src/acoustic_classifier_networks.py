@@ -78,7 +78,7 @@ class LSTMClassifier(nn.Module):
 			# Fbank feature
 			return int(d/40),40,(40//4)*128
 		else:
-			raise ValueError('Acoustic feature dimension for VGG should be 13/
+			raise ValueError('Acoustic feature dimension for VGG should be 13/26/39(MFCC) or 40/80/120(Fbank) but got '+d)
 
     
 	def forward(self, input_sentence, batch_size):
