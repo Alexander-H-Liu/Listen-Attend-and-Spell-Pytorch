@@ -31,7 +31,7 @@ asr_model:
     rnn_cell: 'LSTMCell'                      # Only LSTMCell is availible now.
 
 acoustic_classification:
-  model_type: LSTM   #LSTM, LSTM with attention, self_attention, CNN, RCNN
+  model_type: LSTM   #LSTM, ATTENTION-LSTM, self_attention, CNN, RCNN
   lstm_hidden_size: 512
   lstm_num_layers: 2
   lstm_rnn_dropout: .5

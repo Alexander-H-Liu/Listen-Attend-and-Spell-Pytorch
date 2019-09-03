@@ -13,7 +13,8 @@ from src.rnnlm import RNN_LM
 from src.clm import CLM_wrapper
 from src.dataset import LoadDataset
 from src.postprocess import Mapper,cal_acc,cal_cer,draw_att
-from src.acoustic_classifier_networks import LSTMClassifier
+from src.acoustic_classifier_networks import LSTMClassifier, AttentionModel
+
 import logging
 
 VAL_STEP = 30        # Additional Inference Timesteps to run during validation (to calculate CER)
@@ -104,8 +105,13 @@ class Trainer(Solver):
         ''' Setup ASR (and CLM if enabled)'''
         self.verbose('Init ASR model. Note: validation is done through greedy decoding w/ attention decoder.')
         
-        #self.acoustic_classifier = LSTMClassifier(640, 320, 1, "LSTMCell", 0.0)  #TODO  read from config or compute internally
-        self.acoustic_classifier = LSTMClassifier(self.sample_x, self.config['acoustic_classification'], self.config['asr_model']).to(self.device)  #TODO  move the params
+        if self.config["acoustic_classification"]["model_type"] == "LSTM":
+            self.acoustic_classifier = LSTMClassifier(self.sample_x, self.config['acoustic_classification'], self.config['asr_model']).to(self.device)
+        elif self.config["acoustic_classification"]["model_type"] == "ATTENTION-LSTM":
+            self.acoustic_classifier = AttentionModel(self.sample_x, self.config['acoustic_classification'], self.config['asr_model']).to(self.device)
+        else:
+            self.verbose("Error: AC model type is not known") 
+
 
         # Build attention end-to-end ASR
         self.asr_model = Seq2Seq(self.sample_x,self.mapper.get_dim(),self.config['asr_model']).to(self.device)
@@ -563,7 +569,15 @@ class Validator(Solver):
         self.verbose('Load acoustic classifier model from '+os.path.join(self.ckpdir))
         #checkpoint = torch.load(os.path.join(self.ckpdir,'acoustic_classifier'), map_location=self.device)
         checkpoint = torch.load(self.acoustic_classifier_model_file, map_location=self.device)
-        self.acoustic_classifier = LSTMClassifier(self.sample_x, self.config['acoustic_classification'], self.config['asr_model']).to(self.device)  #TODO  move the params
+        
+         if self.config["acoustic_classification"]["model_type"] == "LSTM":
+            self.acoustic_classifier = LSTMClassifier(self.sample_x, self.config['acoustic_classification'], self.config['asr_model']).to(self.device)
+        elif self.config["acoustic_classification"]["model_type"] == "ATTENTION-LSTM":
+            self.acoustic_classifier = AttentionModel(self.sample_x, self.config['acoustic_classification'], self.config['asr_model']).to(self.device)
+        else:
+            self.verbose("Error: AC model type is not known") 
+            
+        #self.acoustic_classifier = LSTMClassifier(self.sample_x, self.config['acoustic_classification'], self.config['asr_model']).to(self.device)  #TODO  move the params
         #self.acoustic_classifier = torch.load(os.path.join(self.ckpdir,'acoustic_classifier'))
         self.acoustic_classifier.load_state_dict(checkpoint['model_state_dict'])
         self.acoustic_classifier.to(self.device)
