@@ -251,7 +251,7 @@ class Trainer(Solver):
                     temp_d = temp.detach()
                     temp_d.requires_grad = True
                 elif self.config["acoustic_classification"]["input"] == "VGG":
-                    temp = vgg_features
+                    temp = vgg_feature
                     temp_d = temp.detach()
                     temp_d.requires_grad = True
                 else: 
@@ -397,7 +397,7 @@ class Trainer(Solver):
                 temp_d = temp.detach()
                 temp_d.requires_grad = True
             elif self.config["acoustic_classification"]["input"] == "VGG":
-                temp = vgg_features
+                temp = vgg_feature
                 temp_d = temp.detach()
                 temp_d.requires_grad = True
             else: 
