@@ -27,6 +27,7 @@ class Seq2Seq(nn.Module):
         
         self.joint_ctc = model_para['optimizer']['joint_ctc']>0
         self.joint_att = model_para['optimizer']['joint_ctc']<1
+        self.enc_type = model_para["encoder"]["enc_type"]
         #print("XXXX ", enc_out_dim)
         # Encoder
         self.encoder = Listener(example_input,**model_para['encoder'])
@@ -57,8 +58,13 @@ class Seq2Seq(nn.Module):
 
     def forward(self, audio_feature, decode_step,tf_rate=0.0,teacher=None,state_len=None):
         bs = audio_feature.shape[0]
+        vgg_features = None
+        vgg_enc_len = 0
         # Encode
-        encode_feature,encode_len = self.encoder(audio_feature,state_len)
+        if "VGG" in self.enc_type:
+            encode_feature,encode_len, vgg_features, vgg_enc_len = self.encoder(audio_feature,state_len,True)
+        else:
+            encode_feature,encode_len = self.encoder(audio_feature,state_len)
 
         ctc_output = None
         att_output = None
@@ -111,7 +117,7 @@ class Seq2Seq(nn.Module):
             att_maps = [torch.stack(att,dim=1) for att in output_att_seq]
 
             
-        return ctc_output, encode_len, att_output, att_maps, encode_feature
+        return ctc_output, encode_len, att_output, att_maps, encode_feature, vgg_features, vgg_enc_len
 
     def init_parameters(self):
         # Reference : https://github.com/espnet/espnet/blob/master/espnet/nets/e2e_asr_th.py
@@ -312,13 +318,21 @@ class Listener(nn.Module):
             input_dim = rnn_out_dim
 
     
-    def forward(self,input_x,enc_len):
+    def forward(self,input_x,enc_len, return_vgg=False):
+        vgg_enc = None
+        vgg_enc_len = 0
         if self.vgg:
             input_x,enc_len = self.vgg_extractor(input_x,enc_len)
+            vgg_enc = input_x
+            vgg_enc_len = enc_len
         for l in range(self.num_layers):
             input_x, _,enc_len = getattr(self,'layer'+str(l))(input_x,state_len=enc_len, pack_input=True)
             input_x = torch.tanh(getattr(self,'proj'+str(l))(input_x))
-        return input_x,enc_len
+        # return vgg output is needed
+        if return_vgg:
+            return input_x,enc_len , vgg_enc, vgg_enc_len
+        else:
+            return input_x,enc_len 
 
 # Speller specified in the paper
 class Speller(nn.Module):

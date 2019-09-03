@@ -238,16 +238,26 @@ class Trainer(Solver):
                 self.asr_opt.zero_grad()
                 self.ac_classifier_opt.zero_grad()
 
-                ctc_pred, state_len, att_pred, _,encode_feature =  self.asr_model(x, ans_len,tf_rate=tf_rate,teacher=y,state_len=state_len)
+                ctc_pred, state_len, att_pred, _,encode_feature, vgg_feature, vgg_enc_len =  self.asr_model(x, ans_len,tf_rate=tf_rate,teacher=y,state_len=state_len)
                 
 
                 # Acoustic classifer forwarding and loss
                 # TODO ?  is it correct 
                 # https://discuss.pytorch.org/t/implement-multi-input-multi-head-neural-network-with-different-specific-forward-backpropagation-path/18360
                 # https://discuss.pytorch.org/t/two-optimizers-for-one-model/11085/14
-                temp = encode_feature
-                temp_d = temp.detach()
-                temp_d.requires_grad = True
+                
+                if self.config["acoustic_classification"]["input"] == "encoder":
+                    temp = encode_feature
+                    temp_d = temp.detach()
+                    temp_d.requires_grad = True
+                elif self.config["acoustic_classification"]["input"] == "VGG":
+                    temp = vgg_features
+                    temp_d = temp.detach()
+                    temp_d.requires_grad = True
+                else: 
+                    self.verbose('Error: acoustic input is not know')
+
+
                 logits, class_pred = self.acoustic_classifier(temp_d, temp_d.shape[0])
 
                 self.ac_classification_loss = torch.nn.CrossEntropyLoss()(logits, z)
@@ -373,15 +383,26 @@ class Trainer(Solver):
             ans_len = int(torch.max(torch.sum(y!=0,dim=-1)))
             
             # Forward
-            ctc_pred, state_len, att_pred, att_maps, encode_feature = self.asr_model(x, ans_len+VAL_STEP,state_len=state_len)
+            ctc_pred, state_len, att_pred, att_maps, encode_feature, vgg_feature, vgg_enc_len  = self.asr_model(x, ans_len+VAL_STEP,state_len=state_len)
 
             # Acoustic classifer forwarding and loss
             # TODO ?  is it correct 
             # https://discuss.pytorch.org/t/implement-multi-input-multi-head-neural-network-with-different-specific-forward-backpropagation-path/18360
             # https://discuss.pytorch.org/t/two-optimizers-for-one-model/11085/14
-            temp = encode_feature
-            temp_d = temp.detach()
-            temp_d.requires_grad = True
+            #temp = encode_feature
+            #temp_d = temp.detach()
+            #temp_d.requires_grad = True
+            if self.config["acoustic_classification"]["input"] == "encoder":
+                temp = encode_feature
+                temp_d = temp.detach()
+                temp_d.requires_grad = True
+            elif self.config["acoustic_classification"]["input"] == "VGG":
+                temp = vgg_features
+                temp_d = temp.detach()
+                temp_d.requires_grad = True
+            else: 
+                self.verbose('Error: acoustic input is not know')
+
             logits, class_pred = self.acoustic_classifier(temp_d, temp_d.shape[0])
             ##logits, class_pred = self.acoustic_classifier(encode_feature, encode_feature.shape[0])
             val_ac_classification_loss += torch.nn.CrossEntropyLoss()(logits, z) * int(x.shape[0])
@@ -635,7 +656,7 @@ class Validator(Solver):
 
                         # Forward 
                         max_decode_step =  int(np.ceil(state_len[0]*self.decode_step_ratio)) # TODO is  it correct?
-                        ctc_pred, state_len, att_pred, att_maps, encode_feature = self.asr_model(x, max_decode_step,state_len=state_len)
+                        ctc_pred, state_len, att_pred, att_maps, encode_feature, vgg_feature, vgg_enc_len  = self.asr_model(x, max_decode_step,state_len=state_len)
                         ctc_pred = torch.argmax(ctc_pred,dim=-1).cpu() if ctc_pred is not None else None
                         ctc_results.append(ctc_pred)
 

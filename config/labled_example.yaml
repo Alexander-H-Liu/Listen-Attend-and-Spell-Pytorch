@@ -31,20 +31,18 @@ asr_model:
     rnn_cell: 'LSTMCell'                      # Only LSTMCell is availible now.
 
 acoustic_classification:
+  model_type: LSTM   #LSTM, LSTM with attention, self_attention, CNN, RCNN
   lstm_hidden_size: 512
   lstm_num_layers: 2
   lstm_rnn_dropout: .5
-  lstm_final_dropout: 0.7 
+  lstm_final_dropout: 0.7
+  input: "VGG"  # encoder/VGG
   optimizer:
     type: 'Adadelta'                              # Optimizer used for training (adam)
     learning_rate: 1                          # Learning rate for opt
 
-  model_type: LSTM   #LSTM, LSTM with attention, self_attention, CNN, RCNN
-  # LSTM params
-  lstm_hidden_dim: 256
-  lstm_layers: 1
-  lstm_dropout: 0.0
-
+  
+  
 
 clm:
   enable: False                               # Enable adversarial training between ASR and CLM
