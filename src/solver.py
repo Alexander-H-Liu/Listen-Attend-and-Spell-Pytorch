@@ -570,13 +570,13 @@ class Validator(Solver):
         #checkpoint = torch.load(os.path.join(self.ckpdir,'acoustic_classifier'), map_location=self.device)
         checkpoint = torch.load(self.acoustic_classifier_model_file, map_location=self.device)
         
-         if self.config["acoustic_classification"]["model_type"] == "LSTM":
+        if self.config["acoustic_classification"]["model_type"] == "LSTM":
             self.acoustic_classifier = LSTMClassifier(self.sample_x, self.config['acoustic_classification'], self.config['asr_model']).to(self.device)
         elif self.config["acoustic_classification"]["model_type"] == "ATTENTION-LSTM":
             self.acoustic_classifier = AttentionModel(self.sample_x, self.config['acoustic_classification'], self.config['asr_model']).to(self.device)
         else:
             self.verbose("Error: AC model type is not known") 
-            
+
         #self.acoustic_classifier = LSTMClassifier(self.sample_x, self.config['acoustic_classification'], self.config['asr_model']).to(self.device)  #TODO  move the params
         #self.acoustic_classifier = torch.load(os.path.join(self.ckpdir,'acoustic_classifier'))
         self.acoustic_classifier.load_state_dict(checkpoint['model_state_dict'])
