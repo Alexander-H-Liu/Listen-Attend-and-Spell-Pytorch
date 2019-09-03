@@ -168,6 +168,7 @@ class AttentionModel(torch.nn.Module):
 		self.label = nn.Linear(self.hidden_size, self.output_size)
 		self.dropout_layer = nn.Dropout(p=last_dropout)
 		#self.attn_fc_layer = nn.Linear()
+		self.softmax = nn.Softmax()
 
 	def check_dim(self, example_input):
 		d = example_input.shape[-1]
