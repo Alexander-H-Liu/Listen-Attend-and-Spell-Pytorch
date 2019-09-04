@@ -392,3 +392,105 @@ class SelfAttention(nn.Module):
 		probs = self.softmax(logits)
 
 		return logits, probs
+
+
+class RCNN(nn.Module):
+	def __init__(self, example, model_para, asr_model_para):
+		super(RCNN, self).__init__()
+		
+		"""
+		Arguments
+		---------
+		batch_size : Size of the batch which is same as the batch_size of the data returned by the TorchText BucketIterator
+		output_size : 2 = (pos, neg)
+		hidden_sie : Size of the hidden_state of the LSTM
+		vocab_size : Size of the vocabulary containing unique words
+		embedding_length : Embedding dimension of GloVe word embeddings
+		weights : Pre-trained GloVe word_embeddings which we will use to create our word_embedding look-up table 
+		
+		"""
+		enc_out_dim = int(asr_model_para['encoder']['dim'].split('_')[-1])\
+                      *max(1,2*('Bi' in asr_model_para['encoder']['enc_type']))\
+                      *max(1,int(asr_model_para['encoder']['sample_rate'].split('_')[-1])\
+                           *('concat'== asr_model_para['encoder']['sample_style']))
+
+		if model_para["input"] == "VGG":
+			_,_, enc_out_dim = self.check_dim(example)
+
+		self.output_size = output_size
+		self.input_dim = enc_out_dim
+		self.num_layers = model_para["lstm_num_layers"]
+		rnn_dropout = model_para["lstm_rnn_dropout"]
+		self.hidden_size = model_para["lstm_hidden_size"]
+		last_dropout = model_para["lstm_final_dropout"]
+		
+		
+		self.dropout = rnn_dropout
+		self.lstm = nn.LSTM(self.input_dim, self.hidden_size, dropout=self.dropout, bidirectional=True, num_layers=self.num_layers)
+		self.W2 = nn.Linear(2*self.hidden_size+self.input_dim, self.hidden_size)
+	
+		self.label = nn.Linear(self.hidden_size, self.output_size)
+		self.softmax = nn.Softmax()
+
+
+	def check_dim(self, example_input):
+		d = example_input.shape[-1]
+		if d%13 == 0:
+			# MFCC feature
+			return int(d/13),13,(13//4)*128
+		elif d%40 == 0:
+			# Fbank feature
+			return int(d/40),40,(40//4)*128
+		else:
+			raise ValueError('Acoustic feature dimension for VGG should be 13/26/39(MFCC) or 40/80/120(Fbank) but got '+d)
+
+
+	def forward(self, input_sentence, batch_size):
+	
+		""" 
+		Parameters
+		----------
+		input_sentence: input_sentence of shape = (batch_size, num_sequences)
+		batch_size : default = None. Used only for prediction on a single sentence after training (batch_size = 1)
+		
+		Returns
+		-------
+		Output of the linear layer containing logits for positive & negative class which receives its input as the final_hidden_state of the LSTM
+		final_output.shape = (batch_size, output_size)
+		
+		"""
+		
+		"""
+		
+		The idea of the paper "Recurrent Convolutional Neural Networks for Text Classification" is that we pass the embedding vector
+		of the text sequences through a bidirectional LSTM and then for each sequence, our final embedding vector is the concatenation of 
+		its own GloVe embedding and the left and right contextual embedding which in bidirectional LSTM is same as the corresponding hidden
+		state. This final embedding is passed through a linear layer which maps this long concatenated encoding vector back to the hidden_size
+		vector. After this step, we use a max pooling layer across all sequences of texts. This converts any varying length text into a fixed
+		dimension tensor of size (batch_size, hidden_size) and finally we map this to the output layer.
+
+		"""
+		#input = self.word_embeddings(input_sentence) # embedded input of shape = (batch_size, num_sequences, embedding_length)
+		input = input_sentence.permute(1, 0, 2) # input.size() = (num_sequences, batch_size, embedding_length)
+		"""
+		if batch_size is None:
+			h_0 = Variable(torch.zeros(2, self.batch_size, self.hidden_size).cuda()) # Initial hidden state of the LSTM
+			c_0 = Variable(torch.zeros(2, self.batch_size, self.hidden_size).cuda()) # Initial cell state of the LSTM
+		else:
+			h_0 = Variable(torch.zeros(2, batch_size, self.hidden_size).cuda())
+			c_0 = Variable(torch.zeros(2, batch_size, self.hidden_size).cuda())
+		"""
+		weight = next(self.parameters()).data
+		hidden = (weight.new(2*self.num_layers, batch_size, self.hidden_size).zero_(), weight.new(2*self.num_layers, batch_size, self.hidden_size).zero_())
+		
+		output, (final_hidden_state, final_cell_state) = self.lstm(input, hidden)
+		
+		final_encoding = torch.cat((output, input), 2).permute(1, 0, 2)
+		y = self.W2(final_encoding) # y.size() = (batch_size, num_sequences, hidden_size)
+		y = y.permute(0, 2, 1) # y.size() = (batch_size, hidden_size, num_sequences)
+		y = F.max_pool1d(y, y.size()[2]) # y.size() = (batch_size, hidden_size, 1)
+		y = y.squeeze(2)
+		logits = self.label(y)
+		probs = self.softmax(logits)
+
+		return logits, probs
