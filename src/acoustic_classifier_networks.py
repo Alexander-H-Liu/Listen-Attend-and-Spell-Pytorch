@@ -295,7 +295,7 @@ class SelfAttention(nn.Module):
 		#self.embedding_length = embedding_length
 		#self.weights = weights
 
-		s#elf.word_embeddings = nn.Embedding(vocab_size, embedding_length)
+		#self.word_embeddings = nn.Embedding(vocab_size, embedding_length)
 		#if model_level == "word":
 		#	self.word_embeddings.weights = nn.Parameter(weights, requires_grad=False)
 		#self.dropout = 0.8
@@ -347,7 +347,7 @@ class SelfAttention(nn.Module):
 		else:
 			raise ValueError('Acoustic feature dimension for VGG should be 13/26/39(MFCC) or 40/80/120(Fbank) but got '+d)
 	
-	
+
 	def forward(self, input_sentences, batch_size):
 
 		""" 
