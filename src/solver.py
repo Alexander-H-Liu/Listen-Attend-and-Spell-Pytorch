@@ -13,7 +13,7 @@ from src.rnnlm import RNN_LM
 from src.clm import CLM_wrapper
 from src.dataset import LoadDataset
 from src.postprocess import Mapper,cal_acc,cal_cer,draw_att
-from src.acoustic_classifier_networks import LSTMClassifier, AttentionModel
+from src.acoustic_classifier_networks import LSTMClassifier, AttentionModel, SelfAttention
 
 import logging
 
@@ -109,6 +109,8 @@ class Trainer(Solver):
             self.acoustic_classifier = LSTMClassifier(self.sample_x, self.config['acoustic_classification'], self.config['asr_model']).to(self.device)
         elif self.config["acoustic_classification"]["model_type"] == "ATTENTION-LSTM":
             self.acoustic_classifier = AttentionModel(self.sample_x, self.config['acoustic_classification'], self.config['asr_model']).to(self.device)
+        elif self.config["acoustic_classification"]["model_type"] == "SelfAttention":
+            self.acoustic_classifier = SelfAttention(self.sample_x, self.config['acoustic_classification'], self.config['asr_model']).to(self.device)
         else:
             self.verbose("Error: AC model type is not known") 
 
@@ -574,8 +576,11 @@ class Validator(Solver):
             self.acoustic_classifier = LSTMClassifier(self.sample_x, self.config['acoustic_classification'], self.config['asr_model']).to(self.device)
         elif self.config["acoustic_classification"]["model_type"] == "ATTENTION-LSTM":
             self.acoustic_classifier = AttentionModel(self.sample_x, self.config['acoustic_classification'], self.config['asr_model']).to(self.device)
+        elif self.config["acoustic_classification"]["model_type"] == "SelfAttention":
+            self.acoustic_classifier = SelfAttention(self.sample_x, self.config['acoustic_classification'], self.config['asr_model']).to(self.device)
         else:
-            self.verbose("Error: AC model type is not known") 
+            self.verbose("Error: AC model type is not known")
+        
 
         #self.acoustic_classifier = LSTMClassifier(self.sample_x, self.config['acoustic_classification'], self.config['asr_model']).to(self.device)  #TODO  move the params
         #self.acoustic_classifier = torch.load(os.path.join(self.ckpdir,'acoustic_classifier'))
