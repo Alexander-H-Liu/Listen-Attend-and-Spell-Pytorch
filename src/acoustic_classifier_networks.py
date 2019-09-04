@@ -372,7 +372,7 @@ class SelfAttention(nn.Module):
 			c_0 = Variable(torch.zeros(2, batch_size, self.hidden_size).cuda())
 		"""
 		weight = next(self.parameters()).data
-		hidden = (weight.new(self.num_layers, batch_size, self.hidden_size).zero_(), weight.new(self.num_layers, batch_size, self.hidden_size).zero_())
+		hidden = (weight.new(2*self.num_layers, batch_size, self.hidden_size).zero_(), weight.new(2*self.num_layers, batch_size, self.hidden_size).zero_())
 
 		output, (h_n, c_n) = self.bilstm(input, hidden)
 		output = output.permute(1, 0, 2)
