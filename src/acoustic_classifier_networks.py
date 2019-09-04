@@ -245,9 +245,9 @@ class AttentionModel(torch.nn.Module):
 		output = output.permute(1, 0, 2) # output.size() = (batch_size, num_seq, hidden_size)
 		
 		attn_output = self.attention_net(output, final_hidden_state)
-		final_output = self.dropout_layer(attn_output[-1])
+		#final_output = self.dropout_layer(attn_output[-1])
 		
-		logits = self.label(final_output)
+		logits = self.label(attn_output)
 		probs = self.softmax(logits)
 		
 		return logits, probs
@@ -336,6 +336,18 @@ class SelfAttention(nn.Module):
 
 		return attn_weight_matrix
 
+	def check_dim(self, example_input):
+		d = example_input.shape[-1]
+		if d%13 == 0:
+			# MFCC feature
+			return int(d/13),13,(13//4)*128
+		elif d%40 == 0:
+			# Fbank feature
+			return int(d/40),40,(40//4)*128
+		else:
+			raise ValueError('Acoustic feature dimension for VGG should be 13/26/39(MFCC) or 40/80/120(Fbank) but got '+d)
+	
+	
 	def forward(self, input_sentences, batch_size):
 
 		""" 
