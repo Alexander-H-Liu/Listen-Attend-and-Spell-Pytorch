@@ -60,7 +60,7 @@ dim = paras.feature_dim*(1+paras.apply_delta+paras.apply_delta_delta)
 segments = pd.read_csv(paras.input_segment_file, sep="|")
 fnames = segments["fname"]
 labs = segments["labels"]
-transcripts = segments["transcripts"]
+transcripts = segments["transcription"]
 splits = segments["split"]
 questions = segments["question"]
 
