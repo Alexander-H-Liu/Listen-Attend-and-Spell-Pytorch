@@ -12,6 +12,12 @@ import pickle
 import numpy as np
 import pandas as pd
 
+# TODO:
+# 
+# 3- add option to libri to use a pretrained bpe (trained here)
+# 4- check everything is correct
+
+
 def boolean_string(s):
     if s not in ['False', 'True']:
         raise ValueError('Not a valid boolean string')
@@ -37,14 +43,19 @@ paras = parser.parse_args()
 
 
 def read_text(text, target):
-    #src_file = '-'.join(file.split('-')[:-1])+'.trans.txt'
-    #idx = file.split('/')[-1].split('.')[0]
     # convert to upper
     text = text.upper()  # preprocessing
+    text = text.replace("?", "")
+    text = text.replace(".", "")
+    text = text.replace(",", "")
+    text = text.replace(";", "")
+    text = text.replace("!", "")
+    #text = text.replace(":", " ")
+
     if target =='char':
-        return [c for c in text.split(' ',1)[1]]
+        return [c for c in text.split()]
     elif target =='subword':
-        return text.split(' ',1)[1]
+        return text.split()
     else:
         raise ValueError('Unsupported target: '+target)
 
@@ -69,6 +80,7 @@ questions = segments["question"]
 id2phqgad = {}
 id2trans = {}
 id2split = {}
+fname2full = {}
 
 for fi, la, tr, sp, q in zip(fnames, labs, transcripts, splits, questions):  # TODO  check make sure correct
     
@@ -83,6 +95,9 @@ for fi, la, tr, sp, q in zip(fnames, labs, transcripts, splits, questions):  # T
     id2phqgad[fi] = l
     id2trans[fi] = tr
     id2split[fi] = sp
+
+    p = fi.split("/")[-1].split(".")[0]
+    fname2full[p] = fi
 
 
 # BPE training
@@ -107,12 +122,12 @@ if paras.target == 'subword':
     for s in bpe_tr:
         if s == "libri":
             continue
-        #todo = list(Path(os.path.join(paras.data_path,s)).rglob("*.wav"))
-        #tr_txt+=Parallel(n_jobs=paras.n_jobs)(delayed(read_text)(str(file),target=paras.target) for file in todo)
+      
         for key in id2split:
             if  id2split[key] == s:
-                tr_txt += read_text(id2trans[key], "subword")    
-    with open(os.path.join(bpe_dir,'train.txt'),'w') as f:   # TODO Concat or load other data 
+                tr_txt.append(" ".join(read_text(id2trans[key], "subword")))
+            
+    with open(os.path.join(bpe_dir,'train.txt'),'w') as f:   
         for s in tr_txt:f.write(s+'\n')
 
         if "libri" in bpe_tr:
@@ -139,12 +154,11 @@ if paras.target == 'subword':
             if  id2split[key] == s:
                 if s not in txts:
                     txts[s] = []
-                txts[s] += read_text(id2trans[key], "subword") 
+                txts[s].append(" ".join(read_text(id2trans[key], "subword")))
 
 
     for s in txts:
-        #todo = list(Path(os.path.join(paras.data_path,s)).rglob("*.flac"))
-        #txts = Parallel(n_jobs=paras.n_jobs)(delayed(read_text)(str(file),target=paras.target) for file in todo)
+
         with open(os.path.join(bpe_dir,'raw',s+'.txt'),'w') as f:
             for sent in txts[s]:f.write(sent+'\n')
         call(['spm_encode',
@@ -168,27 +182,43 @@ for idx,s in enumerate(sets):
 tr_set = input('Please enter the index of splits you wish to use preprocess. (seperate with space): ')
 tr_set = [sets[int(t)] for t in tr_set.split(' ')]
 
+todo_ = {}
+todo__ = list(Path(paras.data_path).rglob("*.wav"))
+for fi in todo__:
+    fi_ = "/".join(str(fi).split("/")[-3:])
+    for s in tr_set:
+        if s not in todo_:
+            todo_[s] = []
+        if fi_ in id2split: # not include contorl questions
+            if id2split[fi_] == s:
+                todo_[s].append(fi)
+            
+    
+    
 
 # Acoustic Feature Extraction & Make Date Table
 for s in tr_set:
     print('')
     print('Preprocessing',s,'data...',end='')
-    todo = list(Path(os.path.join(paras.data_path,s)).rglob("*.wav"))
+
+    
+
+    todo = todo_[s]
+    
     print(len(todo),'audio files found in',s)
 
     print('Encoding target...',flush=True)
     if paras.target == 'subword':
         tr_y = []
-        with open(os.path.join(bpe_dir,'encode',s+'.txt'),'r') as f:
+        with open(os.path.join(bpe_dir,'encode',s+'.txt'),'r') as f:  
             for line in f:tr_y.append(line[:-1].split(' '))
     else:
-        #tr_y = Parallel(n_jobs=paras.n_jobs)(delayed(read_text)(str(file),target=paras.target) for file in tqdm(todo))  #TODO  this line should change
+       
         for key in id2split:
             if  id2split[key] == s:
-                tr_y += read_text(id2trans[key], paras.target) 
+                tr_y.append(" ".join(read_text(id2trans[key], paras.target)))
 
-
-    tr_y, encode_table = encode_target(tr_y,table=encode_table,mode=paras.target,max_idx=paras.n_tokens)  # ????
+    tr_y, encode_table = encode_target(tr_y,table=encode_table,mode=paras.target,max_idx=paras.n_tokens)  
 
     if output_dir is None:
         output_dir = os.path.join(paras.output_path,'_'.join(['amt',str(paras.feature_type)+str(dim),str(paras.target)+str(len(encode_table))]))
@@ -204,7 +234,7 @@ for s in tr_set:
     sorted_y = ['_'.join([str(i) for i in tr_y[idx]]) for idx in reversed(np.argsort(tr_x))]
     sorted_todo = [os.path.join(s,str(todo[idx]).split('/')[-1].replace('.wav','.npy')) for idx in reversed(np.argsort(tr_x))]
     
-    spk_ids = [x.split("/")[1].split("-")[0] for x in sorted_todo] # TODO ???????
+    spk_ids = [fname2full[str(x).split("/")[-1].split(".")[0]]  for x in sorted_todo] 
     sorted_labels = [id2phqgad[x] for x in spk_ids]
 
     # Dump label

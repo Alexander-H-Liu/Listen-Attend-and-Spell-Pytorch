@@ -30,6 +30,7 @@ parser.add_argument('--output_path', default='.', type=str, help='Path to store 
 parser.add_argument('--n_jobs', default=-1, type=int, help='Number of jobs used for feature extraction', required=False)
 parser.add_argument('--target', default='subword', type=str, help='Learning target ( phoneme / char / subword / word )', required=False)
 parser.add_argument('--n_tokens', default=5000, type=int, help='Vocabulary size of target', required=False)
+parser.add_argument("--load_bpe", default=None, help="load a pre trained model")
 paras = parser.parse_args()
 
 
@@ -77,31 +78,40 @@ if paras.target == 'subword':
     bpe_dir = os.path.join(output_dir,'bpe')
     if not os.path.exists(bpe_dir):os.makedirs(bpe_dir)
 
-    # Select dataset
-    print('')
-    print('Pretrain BPE for subword unit.')
-    print('Data sets :')
-    for idx,s in enumerate(sets):
-        print('\t',idx,':',s)
-    bpe_tr = input('Please enter the index for training sets for BPE (seperate w/ space): ')
-    bpe_tr = [sets[int(t)] for t in bpe_tr.split(' ')]
+    if paras.load_bpe is None:
+        # Select dataset
+        print('')
+        print('Pretrain BPE for subword unit.')
+        print('Data sets :')
+        for idx,s in enumerate(sets):
+            print('\t',idx,':',s)
+        bpe_tr = input('Please enter the index for training sets for BPE (seperate w/ space): ')
+        bpe_tr = [sets[int(t)] for t in bpe_tr.split(' ')]
 
-    # Collect text
-    tr_txt = []
-    for s in bpe_tr:
-        todo = list(Path(os.path.join(paras.data_path,s)).rglob("*.flac"))
-        tr_txt+=Parallel(n_jobs=paras.n_jobs)(delayed(read_text)(str(file),target=paras.target) for file in todo)
-    with open(os.path.join(bpe_dir,'train.txt'),'w') as f:
-        for s in tr_txt:f.write(s+'\n')
+        # Collect text
+        tr_txt = []
+        for s in bpe_tr:
+            todo = list(Path(os.path.join(paras.data_path,s)).rglob("*.flac"))
+            tr_txt+=Parallel(n_jobs=paras.n_jobs)(delayed(read_text)(str(file),target=paras.target) for file in todo)
+        with open(os.path.join(bpe_dir,'train.txt'),'w') as f:
+            for s in tr_txt:f.write(s+'\n')
 
-    # Train BPE
-    from subprocess import call
-    call(['spm_train',
-          '--input='+os.path.join(bpe_dir,'train.txt'),
-          '--model_prefix='+os.path.join(bpe_dir,'bpe'),
-          '--vocab_size='+str(paras.n_tokens),
-          '--character_coverage=1.0'
-        ])
+        # Train BPE
+        from subprocess import call
+        call(['spm_train',
+            '--input='+os.path.join(bpe_dir,'train.txt'),
+            '--model_prefix='+os.path.join(bpe_dir,'bpe'),
+            '--vocab_size='+str(paras.n_tokens),
+            '--character_coverage=1.0'
+            ])
+    else:
+        bpe_model_dir = paras.load_bpe
+        from shutil import copyfile
+        copyfile(bpe_model_dir + "/bpe.model", bpe_dir)
+        copyfile(bpe_model_dir + "/bpe.vocab", bpe_dir)
+        print("bpe model copied!")
+
+
     # Encode data
     if not os.path.exists(os.path.join(bpe_dir,'raw')):os.makedirs(os.path.join(bpe_dir,'raw'))
     if not os.path.exists(os.path.join(bpe_dir,'encode')):os.makedirs(os.path.join(bpe_dir,'encode'))
