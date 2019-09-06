@@ -186,7 +186,7 @@ class LabeledDataset(Dataset):
         y = target_padding(y, max([len(v) for v in y]))
         # TODO  move the T to config or somewhere like that
         T = 10
-        z = [1 if z >= T else 0 for z in self.Z[index]]  # binirization
+        z = [1.0 if z >= T else 0.0 for z in self.Z[index]]  # binirization
         if self.text_only:
             return y
         
