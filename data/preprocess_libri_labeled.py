@@ -107,8 +107,8 @@ if paras.target == 'subword':
     else:
         bpe_model_dir = paras.load_bpe
         from shutil import copyfile
-        copyfile(bpe_model_dir + "/bpe.model", bpe_dir)
-        copyfile(bpe_model_dir + "/bpe.vocab", bpe_dir)
+        copyfile(bpe_model_dir + "/bpe.model", bpe_dir + "/bpe.model")
+        copyfile(bpe_model_dir + "/bpe.vocab", bpe_dir + "/bpe.vocab")
         print("bpe model copied!")
 
 
