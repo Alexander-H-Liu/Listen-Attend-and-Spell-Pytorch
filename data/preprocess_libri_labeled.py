@@ -11,6 +11,7 @@ from tqdm import tqdm
 import pickle
 import numpy as np
 import pandas as pd
+from subprocess import call
 
 def boolean_string(s):
     if s not in ['False', 'True']:
@@ -97,7 +98,7 @@ if paras.target == 'subword':
             for s in tr_txt:f.write(s+'\n')
 
         # Train BPE
-        from subprocess import call
+        
         call(['spm_train',
             '--input='+os.path.join(bpe_dir,'train.txt'),
             '--model_prefix='+os.path.join(bpe_dir,'bpe'),
