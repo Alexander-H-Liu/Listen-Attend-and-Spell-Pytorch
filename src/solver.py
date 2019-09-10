@@ -22,6 +22,10 @@ TRAIN_WER_STEP = 250 # steps for debugging info.
 GRAD_CLIP = 5
 CLM_MIN_SEQ_LEN = 5
 
+
+#TODO:
+# 5- auc verify  apply over whole thing  (first collect in a list)
+
 def roc_auc_compute_fn(y_preds, y_targets):
     try:
         from sklearn.metrics import roc_auc_score
@@ -379,6 +383,10 @@ class Trainer(Solver):
         total_auc = 0.0
         val_ac_classification_loss = 0.0
         # Perform va idation
+        
+        all_targets = []
+        all_preds = []
+
         for cur_b,(x,y,z, fname) in enumerate(self.dev_set):
             self.progress(' '.join(['Valid step -',str(self.step),'(',str(cur_b),'/',str(len(self.dev_set)),')']))
 
@@ -420,11 +428,12 @@ class Trainer(Solver):
             target = z #torch.squeeze(torch.stack(z)).long()
             num_corrects = (torch.max(class_pred, 1)[1].view(target.size()).data == target.data).sum()
             acc = 100.0 * num_corrects
-            auc = roc_auc_compute_fn(class_pred.cpu().detach(), target.cpu())
+            #auc = roc_auc_compute_fn(class_pred.cpu().detach(), target.cpu())
             #total_epoch_loss += loss.item()
             total_acc += acc.item()
-            total_auc += auc * int(x.shape[0])
-
+            #total_auc += auc * int(x.shape[0])
+            all_targets += target.cpu()
+            all_preds += class_pred.cpu().detach()
             # Compute attention loss & get decoding results
             label = y[:,1:ans_len+1].contiguous()
             if self.ctc_weight<1:
@@ -450,7 +459,8 @@ class Trainer(Solver):
         
 
         avg_acc = total_acc / val_len
-        avg_auc = total_auc / val_len
+        #avg_auc = total_auc / val_len
+        avg_auc = roc_auc_compute_fn(all_preds, all_targets)
         
         acc_log = {}
         auc_log = {}
