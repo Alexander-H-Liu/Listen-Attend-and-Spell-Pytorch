@@ -32,8 +32,8 @@ def roc_auc_compute_fn(y_preds, y_targets):
     except ImportError:
         raise RuntimeError("This contrib module requires sklearn to be installed.")
     
-    y_true = y_targets.numpy()
-    y_pred = y_preds.numpy()[:,1]
+    y_true = y_targets
+    y_pred = y_preds
     try:
         auc = roc_auc_score(y_true, y_pred)
     except:
@@ -432,8 +432,8 @@ class Trainer(Solver):
             #total_epoch_loss += loss.item()
             total_acc += acc.item()
             #total_auc += auc * int(x.shape[0])
-            all_targets += target.cpu()
-            all_preds += class_pred.cpu().detach()
+            all_targets += list(target.cpu().numpy())
+            all_preds += list(class_pred.cpu().detach().numpy()[:,1])
             # Compute attention loss & get decoding results
             label = y[:,1:ans_len+1].contiguous()
             if self.ctc_weight<1:
