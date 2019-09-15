@@ -387,76 +387,77 @@ class Trainer(Solver):
         all_targets = []
         all_preds = []
 
-        for cur_b,(x,y,z, fname) in enumerate(self.dev_set):
-            self.progress(' '.join(['Valid step -',str(self.step),'(',str(cur_b),'/',str(len(self.dev_set)),')']))
+        with torch.no_grad():
+            for cur_b,(x,y,z, fname) in enumerate(self.dev_set):
+                self.progress(' '.join(['Valid step -',str(self.step),'(',str(cur_b),'/',str(len(self.dev_set)),')']))
 
-            # Prepare data
-            if len(x.shape)==4: x = x.squeeze(0)
-            if len(y.shape)==3: y = y.squeeze(0)
-            x = x.to(device = self.device,dtype=torch.float32)
-            y = y.to(device = self.device,dtype=torch.long)
-            z = torch.squeeze(torch.stack(z)).long().to(self.device) 
-            state_len = torch.sum(torch.sum(x.cpu(),dim=-1)!=0,dim=-1)
-            state_len = [int(sl) for sl in state_len]
-            ans_len = int(torch.max(torch.sum(y!=0,dim=-1)))
+                # Prepare data
+                if len(x.shape)==4: x = x.squeeze(0)
+                if len(y.shape)==3: y = y.squeeze(0)
+                x = x.to(device = self.device,dtype=torch.float32)
+                y = y.to(device = self.device,dtype=torch.long)
+                z = torch.squeeze(torch.stack(z)).long().to(self.device) 
+                state_len = torch.sum(torch.sum(x.cpu(),dim=-1)!=0,dim=-1)
+                state_len = [int(sl) for sl in state_len]
+                ans_len = int(torch.max(torch.sum(y!=0,dim=-1)))
+                
+                # Forward
+                ctc_pred, state_len, att_pred, att_maps, encode_feature, vgg_feature, vgg_enc_len  = self.asr_model(x, ans_len+VAL_STEP,state_len=state_len)
+
+                # Acoustic classifer forwarding and loss
+                # TODO ?  is it correct 
+                # https://discuss.pytorch.org/t/implement-multi-input-multi-head-neural-network-with-different-specific-forward-backpropagation-path/18360
+                # https://discuss.pytorch.org/t/two-optimizers-for-one-model/11085/14
+                #temp = encode_feature
+                #temp_d = temp.detach()
+                #temp_d.requires_grad = True
+                if self.config["acoustic_classification"]["input"] == "encoder":
+                    temp = encode_feature
+                    temp_d = temp.detach()
+                    temp_d.requires_grad = True
+                elif self.config["acoustic_classification"]["input"] == "VGG":
+                    temp = vgg_feature
+                    temp_d = temp.detach()
+                    temp_d.requires_grad = True
+                else: 
+                    self.verbose('Error: acoustic input is not know')
+
+                logits, class_pred = self.acoustic_classifier(temp_d, temp_d.shape[0])
+                ##logits, class_pred = self.acoustic_classifier(encode_feature, encode_feature.shape[0])
+                val_ac_classification_loss += torch.nn.CrossEntropyLoss()(logits, z) * int(x.shape[0])
+
+                target = z #torch.squeeze(torch.stack(z)).long()
+                num_corrects = (torch.max(class_pred, 1)[1].view(target.size()).data == target.data).sum()
+                acc = 100.0 * num_corrects
+                #auc = roc_auc_compute_fn(class_pred.cpu().detach(), target.cpu())
+                #total_epoch_loss += loss.item()
+                total_acc += acc.item()
+                #total_auc += auc * int(x.shape[0])
+                all_targets += list(target.cpu().numpy())
+                all_preds += list(class_pred.cpu().detach().numpy()[:,1])
+                # Compute attention loss & get decoding results
+                label = y[:,1:ans_len+1].contiguous()
+                if self.ctc_weight<1:
+                    seq_loss = self.seq_loss(att_pred[:,:ans_len,:].contiguous().view(-1,att_pred.shape[-1]),label.view(-1))
+                    seq_loss = torch.sum(seq_loss.view(x.shape[0],-1),dim=-1)/torch.sum(y!=0,dim=-1)\
+                            .to(device = self.device,dtype=torch.float32) # Sum each uttr and devide by length
+                    seq_loss = torch.mean(seq_loss) # Mean by batch
+                    val_att += seq_loss.detach()*int(x.shape[0])
+                    t1,t2 = cal_cer(att_pred,label,mapper=self.mapper,get_sentence=True)
+                    all_pred += t1
+                    all_true += t2
+                    val_acc += cal_acc(att_pred,label)*int(x.shape[0])
+                    val_cer += cal_cer(att_pred,label,mapper=self.mapper)*int(x.shape[0])
+                
+                # Compute CTC loss
+                if self.ctc_weight>0:
+                    target_len = torch.sum(y!=0,dim=-1)
+                    ctc_loss = self.ctc_loss( F.log_softmax( ctc_pred.transpose(0,1),dim=-1), label, 
+                                            torch.LongTensor(state_len), target_len)
+                    val_ctc += ctc_loss.detach()*int(x.shape[0])
+
+                val_len += int(x.shape[0])
             
-            # Forward
-            ctc_pred, state_len, att_pred, att_maps, encode_feature, vgg_feature, vgg_enc_len  = self.asr_model(x, ans_len+VAL_STEP,state_len=state_len)
-
-            # Acoustic classifer forwarding and loss
-            # TODO ?  is it correct 
-            # https://discuss.pytorch.org/t/implement-multi-input-multi-head-neural-network-with-different-specific-forward-backpropagation-path/18360
-            # https://discuss.pytorch.org/t/two-optimizers-for-one-model/11085/14
-            #temp = encode_feature
-            #temp_d = temp.detach()
-            #temp_d.requires_grad = True
-            if self.config["acoustic_classification"]["input"] == "encoder":
-                temp = encode_feature
-                temp_d = temp.detach()
-                temp_d.requires_grad = True
-            elif self.config["acoustic_classification"]["input"] == "VGG":
-                temp = vgg_feature
-                temp_d = temp.detach()
-                temp_d.requires_grad = True
-            else: 
-                self.verbose('Error: acoustic input is not know')
-
-            logits, class_pred = self.acoustic_classifier(temp_d, temp_d.shape[0])
-            ##logits, class_pred = self.acoustic_classifier(encode_feature, encode_feature.shape[0])
-            val_ac_classification_loss += torch.nn.CrossEntropyLoss()(logits, z) * int(x.shape[0])
-
-            target = z #torch.squeeze(torch.stack(z)).long()
-            num_corrects = (torch.max(class_pred, 1)[1].view(target.size()).data == target.data).sum()
-            acc = 100.0 * num_corrects
-            #auc = roc_auc_compute_fn(class_pred.cpu().detach(), target.cpu())
-            #total_epoch_loss += loss.item()
-            total_acc += acc.item()
-            #total_auc += auc * int(x.shape[0])
-            all_targets += list(target.cpu().numpy())
-            all_preds += list(class_pred.cpu().detach().numpy()[:,1])
-            # Compute attention loss & get decoding results
-            label = y[:,1:ans_len+1].contiguous()
-            if self.ctc_weight<1:
-                seq_loss = self.seq_loss(att_pred[:,:ans_len,:].contiguous().view(-1,att_pred.shape[-1]),label.view(-1))
-                seq_loss = torch.sum(seq_loss.view(x.shape[0],-1),dim=-1)/torch.sum(y!=0,dim=-1)\
-                           .to(device = self.device,dtype=torch.float32) # Sum each uttr and devide by length
-                seq_loss = torch.mean(seq_loss) # Mean by batch
-                val_att += seq_loss.detach()*int(x.shape[0])
-                t1,t2 = cal_cer(att_pred,label,mapper=self.mapper,get_sentence=True)
-                all_pred += t1
-                all_true += t2
-                val_acc += cal_acc(att_pred,label)*int(x.shape[0])
-                val_cer += cal_cer(att_pred,label,mapper=self.mapper)*int(x.shape[0])
-            
-            # Compute CTC loss
-            if self.ctc_weight>0:
-                target_len = torch.sum(y!=0,dim=-1)
-                ctc_loss = self.ctc_loss( F.log_softmax( ctc_pred.transpose(0,1),dim=-1), label, 
-                                         torch.LongTensor(state_len), target_len)
-                val_ctc += ctc_loss.detach()*int(x.shape[0])
-
-            val_len += int(x.shape[0])
-        
 
         avg_acc = total_acc / val_len
         #avg_auc = total_auc / val_len
