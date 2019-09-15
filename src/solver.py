@@ -230,133 +230,133 @@ class Trainer(Solver):
     def exec(self):
         ''' Training End-to-end ASR system'''
         self.verbose('Training set total '+str(len(self.train_set))+' batches.')
-        with autograd.detect_anomaly():
-            while self.step < self.max_step:
-                for x, y, z, fname in self.train_set:
-            
-                    self.progress('Training step - '+str(self.step))
-                    # Perform teacher forcing rate decaying
-                    tf_rate = self.tf_start - self.step*(self.tf_start-self.tf_end)/self.max_step
-                    
-                    # Hack bucket, record state length for each uttr, get longest label seq for decode step
-                    assert len(x.shape)==4,'Bucketing should cause acoustic feature to have shape 1xBxTxD'
-                    assert len(y.shape)==3,'Bucketing should cause label have to shape 1xBxT'
-                    x = x.squeeze(0).to(device = self.device,dtype=torch.float32)
-                    y = y.squeeze(0).to(device = self.device,dtype=torch.long)
-                    z = torch.squeeze(torch.stack(z)).long().to(self.device) #z.squeeze(0).to(device = self.device,dtype=torch.long)
-                    state_len = np.sum(np.sum(x.cpu().data.numpy(),axis=-1)!=0,axis=-1)
-                    state_len = [int(sl) for sl in state_len]
-                    ans_len = int(torch.max(torch.sum(y!=0,dim=-1)))
+        #with autograd.detect_anomaly():
+        while self.step < self.max_step:
+            for x, y, z, fname in self.train_set:
+        
+                self.progress('Training step - '+str(self.step))
+                # Perform teacher forcing rate decaying
+                tf_rate = self.tf_start - self.step*(self.tf_start-self.tf_end)/self.max_step
+                
+                # Hack bucket, record state length for each uttr, get longest label seq for decode step
+                assert len(x.shape)==4,'Bucketing should cause acoustic feature to have shape 1xBxTxD'
+                assert len(y.shape)==3,'Bucketing should cause label have to shape 1xBxT'
+                x = x.squeeze(0).to(device = self.device,dtype=torch.float32)
+                y = y.squeeze(0).to(device = self.device,dtype=torch.long)
+                z = torch.squeeze(torch.stack(z)).long().to(self.device) #z.squeeze(0).to(device = self.device,dtype=torch.long)
+                state_len = np.sum(np.sum(x.cpu().data.numpy(),axis=-1)!=0,axis=-1)
+                state_len = [int(sl) for sl in state_len]
+                ans_len = int(torch.max(torch.sum(y!=0,dim=-1)))
 
-                    # ASR forwarding 
+                # ASR forwarding 
+                self.asr_opt.zero_grad()
+                self.ac_classifier_opt.zero_grad()
+
+                ctc_pred, state_len, att_pred, _,encode_feature, vgg_feature, vgg_enc_len =  self.asr_model(x, ans_len,tf_rate=tf_rate,teacher=y,state_len=state_len)
+                
+
+                # Acoustic classifer forwarding and loss
+                # TODO ?  is it correct 
+                # https://discuss.pytorch.org/t/implement-multi-input-multi-head-neural-network-with-different-specific-forward-backpropagation-path/18360
+                # https://discuss.pytorch.org/t/two-optimizers-for-one-model/11085/14
+                
+                if self.config["acoustic_classification"]["input"] == "encoder":
+                    temp = encode_feature
+                    temp_d = temp.detach()
+                    temp_d.requires_grad = True
+                elif self.config["acoustic_classification"]["input"] == "VGG":
+                    temp = vgg_feature
+                    temp_d = temp.detach()
+                    temp_d.requires_grad = True
+                else: 
+                    self.verbose('Error: acoustic input is not know')
+
+
+                logits, class_pred = self.acoustic_classifier(temp_d, temp_d.shape[0])
+
+                self.ac_classification_loss = torch.nn.CrossEntropyLoss()(logits, z)
+            
+                loss_log = {}
+                label = y[:,1:ans_len+1].contiguous()
+                ctc_loss = 0
+                att_loss = 0
+
+                loss_log["ac_classification_loss"] = self.ac_classification_loss
+
+                # CE loss on attention decoder
+                if self.ctc_weight<1:
+                    b,t,c = att_pred.shape
+                    att_loss = self.seq_loss(att_pred.view(b*t,c),label.view(-1))
+                    att_loss = torch.sum(att_loss.view(b,t),dim=-1)/torch.sum(y!=0,dim=-1)\
+                            .to(device = self.device,dtype=torch.float32) # Sum each uttr and devide by length
+                    att_loss = torch.mean(att_loss) # Mean by batch
+                    loss_log['train_att'] = att_loss
+
+                # CTC loss on CTC decoder
+                if self.ctc_weight>0:
+                    target_len = torch.sum(y!=0,dim=-1)
+                    ctc_loss = self.ctc_loss( F.log_softmax( ctc_pred.transpose(0,1),dim=-1), label, torch.LongTensor(state_len), target_len)
+                    loss_log['train_ctc'] = ctc_loss
+                
+                # ASR loss is composed of both ASR loss and classifiers loss  (with weights)
+                # This allows: 1- learn the asr in a way useful for classification tasks.  2- finetune the asr or encoder in later steps.
+                self.asr_loss = (1- self.classification_weight)*((1-self.ctc_weight)*att_loss+self.ctc_weight*ctc_loss) +   \
+                                        self.classification_weight * self.ac_classification_loss  # TODO add other weights
+
+                loss_log['train_full'] = self.asr_loss
+                
+                # Adversarial loss from CLM
+                if self.apply_clm and att_pred.shape[1]>=CLM_MIN_SEQ_LEN:
+                    if (self.step%self.clm.update_freq)==0:
+                        # update CLM once in a while
+                        clm_log,gp = self.clm.train(att_pred.detach(),CLM_MIN_SEQ_LEN)
+                        self.write_log('clm_score',clm_log)
+                        self.write_log('clm_gp',gp)
+                    adv_feedback = self.clm.compute_loss(F.softmax(att_pred))
+                    self.asr_loss -= adv_feedback
+
+                # Backprop
+                # asr
+                #self.asr_loss.backward(retain_graph=True)
+                #loss = self.asr_loss + self.ac_classification_loss
+                #loss.backward()
+                ## TODO aobe  works?  or:
+                self.ac_classification_loss.backward(retain_graph=True)
+                # TODO ? why not above?
+                #temp.backward(torch.autograd.grad(self.ac_classification_loss, temp_d, only_inputs=False, retain_graph=True)[0], retain_graph=True)
+                self.asr_loss.backward()
+                
+                grad_norm = torch.nn.utils.clip_grad_norm_(self.asr_model.parameters(), GRAD_CLIP)
+                if math.isnan(grad_norm):
+                    self.verbose('Error : grad norm is NaN @ step (asr)'+str(self.step))
+                else:
+                    self.asr_opt.step()
+                
+                # acoustic classifier
+                #self.ac_classification_loss.backward()
+                grad_norm = torch.nn.utils.clip_grad_norm_(self.acoustic_classifier.parameters(), GRAD_CLIP)
+                if math.isnan(grad_norm):
+                    self.verbose('Error : grad norm is NaN @ step (ac_classifier)'+str(self.step))
+                else:
+                    self.ac_classifier_opt.step()
+
+                # Logger
+                self.write_log('loss',loss_log)
+                if self.ctc_weight<1:
+                    self.write_log('acc',{'train':cal_acc(att_pred,label)})
+                if self.step % TRAIN_WER_STEP ==0:
+                    self.write_log('error rate',
+                                {'train':cal_cer(att_pred,label,mapper=self.mapper)})
+
+                # Validation
+                if self.step%self.valid_step == 0:
                     self.asr_opt.zero_grad()
                     self.ac_classifier_opt.zero_grad()
+                    self.valid()
 
-                    ctc_pred, state_len, att_pred, _,encode_feature, vgg_feature, vgg_enc_len =  self.asr_model(x, ans_len,tf_rate=tf_rate,teacher=y,state_len=state_len)
-                    
+                self.step+=1
+                if self.step > self.max_step:break
 
-                    # Acoustic classifer forwarding and loss
-                    # TODO ?  is it correct 
-                    # https://discuss.pytorch.org/t/implement-multi-input-multi-head-neural-network-with-different-specific-forward-backpropagation-path/18360
-                    # https://discuss.pytorch.org/t/two-optimizers-for-one-model/11085/14
-                    
-                    if self.config["acoustic_classification"]["input"] == "encoder":
-                        temp = encode_feature
-                        temp_d = temp.detach()
-                        temp_d.requires_grad = True
-                    elif self.config["acoustic_classification"]["input"] == "VGG":
-                        temp = vgg_feature
-                        temp_d = temp.detach()
-                        temp_d.requires_grad = True
-                    else: 
-                        self.verbose('Error: acoustic input is not know')
-
-
-                    logits, class_pred = self.acoustic_classifier(temp_d, temp_d.shape[0])
-
-                    self.ac_classification_loss = torch.nn.CrossEntropyLoss()(logits, z)
-                
-                    loss_log = {}
-                    label = y[:,1:ans_len+1].contiguous()
-                    ctc_loss = 0
-                    att_loss = 0
-
-                    loss_log["ac_classification_loss"] = self.ac_classification_loss
-
-                    # CE loss on attention decoder
-                    if self.ctc_weight<1:
-                        b,t,c = att_pred.shape
-                        att_loss = self.seq_loss(att_pred.view(b*t,c),label.view(-1))
-                        att_loss = torch.sum(att_loss.view(b,t),dim=-1)/torch.sum(y!=0,dim=-1)\
-                                .to(device = self.device,dtype=torch.float32) # Sum each uttr and devide by length
-                        att_loss = torch.mean(att_loss) # Mean by batch
-                        loss_log['train_att'] = att_loss
-
-                    # CTC loss on CTC decoder
-                    if self.ctc_weight>0:
-                        target_len = torch.sum(y!=0,dim=-1)
-                        ctc_loss = self.ctc_loss( F.log_softmax( ctc_pred.transpose(0,1),dim=-1), label, torch.LongTensor(state_len), target_len)
-                        loss_log['train_ctc'] = ctc_loss
-                    
-                    # ASR loss is composed of both ASR loss and classifiers loss  (with weights)
-                    # This allows: 1- learn the asr in a way useful for classification tasks.  2- finetune the asr or encoder in later steps.
-                    self.asr_loss = (1- self.classification_weight)*((1-self.ctc_weight)*att_loss+self.ctc_weight*ctc_loss) +   \
-                                            self.classification_weight * self.ac_classification_loss  # TODO add other weights
-
-                    loss_log['train_full'] = self.asr_loss
-                    
-                    # Adversarial loss from CLM
-                    if self.apply_clm and att_pred.shape[1]>=CLM_MIN_SEQ_LEN:
-                        if (self.step%self.clm.update_freq)==0:
-                            # update CLM once in a while
-                            clm_log,gp = self.clm.train(att_pred.detach(),CLM_MIN_SEQ_LEN)
-                            self.write_log('clm_score',clm_log)
-                            self.write_log('clm_gp',gp)
-                        adv_feedback = self.clm.compute_loss(F.softmax(att_pred))
-                        self.asr_loss -= adv_feedback
-
-                    # Backprop
-                    # asr
-                    #self.asr_loss.backward(retain_graph=True)
-                    #loss = self.asr_loss + self.ac_classification_loss
-                    #loss.backward()
-                    ## TODO aobe  works?  or:
-                    self.ac_classification_loss.backward(retain_graph=True)
-                    # TODO ? why not above?
-                    #temp.backward(torch.autograd.grad(self.ac_classification_loss, temp_d, only_inputs=False, retain_graph=True)[0], retain_graph=True)
-                    self.asr_loss.backward()
-                    
-                    grad_norm = torch.nn.utils.clip_grad_norm_(self.asr_model.parameters(), GRAD_CLIP)
-                    if math.isnan(grad_norm):
-                        self.verbose('Error : grad norm is NaN @ step (asr)'+str(self.step))
-                    else:
-                        self.asr_opt.step()
-                    
-                    # acoustic classifier
-                    #self.ac_classification_loss.backward()
-                    grad_norm = torch.nn.utils.clip_grad_norm_(self.acoustic_classifier.parameters(), GRAD_CLIP)
-                    if math.isnan(grad_norm):
-                        self.verbose('Error : grad norm is NaN @ step (ac_classifier)'+str(self.step))
-                    else:
-                        self.ac_classifier_opt.step()
-
-                    # Logger
-                    self.write_log('loss',loss_log)
-                    if self.ctc_weight<1:
-                        self.write_log('acc',{'train':cal_acc(att_pred,label)})
-                    if self.step % TRAIN_WER_STEP ==0:
-                        self.write_log('error rate',
-                                    {'train':cal_cer(att_pred,label,mapper=self.mapper)})
-
-                    # Validation
-                    if self.step%self.valid_step == 0:
-                        self.asr_opt.zero_grad()
-                        self.ac_classifier_opt.zero_grad()
-                        self.valid()
-
-                    self.step+=1
-                    if self.step > self.max_step:break
-    
 
     def write_log(self,val_name,val_dict):
         '''Write log to TensorBoard'''
