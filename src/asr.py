@@ -1,352 +1,560 @@
-import math
-import torch
-import numpy as np
+import os
+import torch 
+import random
 import torch.nn as nn
+from torch.nn.utils.rnn import pack_padded_sequence,pad_packed_sequence
 import torch.nn.functional as F
 from torch.distributions.categorical import Categorical
 
-from src.util import init_weights, init_gate
-from src.module import VGGExtractor, RNNLayer, ScaleDotAttention, LocationAwareAttention
+import numpy as np
+import math
+
+from src.postprocess import Hypothesis
+from src.ctc import CTCPrefixScore
+
+CTC_BEAM_RATIO = 1.5 # DO NOT CHANGE THIS, MAY CAUSE OOM 
 
 
-class ASR(nn.Module):
-    ''' ASR model, including Encoder/Decoder(s)'''
+class Seq2Seq(nn.Module):
+    ''' Seq2Seq model, including Encoder/Decoder(s)'''
+    def __init__(self, example_input, output_dim, model_para):
+        super(Seq2Seq, self).__init__()
+        # Construct Seq2Seq model
+        enc_out_dim = int(model_para['encoder']['dim'].split('_')[-1])\
+                      *max(1,2*('Bi' in model_para['encoder']['enc_type']))\
+                      *max(1,int(model_para['encoder']['sample_rate'].split('_')[-1])\
+                           *('concat'== model_para['encoder']['sample_style']))
+        
+        self.joint_ctc = model_para['optimizer']['joint_ctc']>0
+        self.joint_att = model_para['optimizer']['joint_ctc']<1
 
-    def __init__(self, input_size, vocab_size, ctc_weight, encoder, attention, decoder, emb_drop=0.0):
-        super(ASR, self).__init__()
+        # Encoder
+        self.encoder = Listener(example_input,**model_para['encoder'])
 
-        # Setup
-        assert 0 <= ctc_weight <= 1
-        self.vocab_size = vocab_size
-        self.ctc_weight = ctc_weight
-        self.enable_ctc = ctc_weight > 0
-        self.enable_att = ctc_weight != 1
-        self.lm = None
+        # Attention based Decoder
+        if self.joint_att:
+            self.dec_dim = model_para['decoder']['dim']
+            self.attention = Attention(enc_out_dim,self.dec_dim,**model_para['attention'])
+            self.decoder = Speller(enc_out_dim+self.dec_dim, **model_para['decoder'])
+            self.embed = nn.Embedding(output_dim, self.dec_dim)
+            self.char_dim = output_dim
+            self.char_trans = nn.Linear(self.dec_dim,self.char_dim)
 
-        # Modules
-        self.encoder = Encoder(input_size, **encoder)
-        if self.enable_ctc:
-            self.ctc_layer = nn.Linear(self.encoder.out_dim, vocab_size)
-        if self.enable_att:
-            self.dec_dim = decoder['dim']
-            self.pre_embed = nn.Embedding(vocab_size, self.dec_dim)
-            self.embed_drop = nn.Dropout(emb_drop)
-            self.decoder = Decoder(
-                self.encoder.out_dim+self.dec_dim, vocab_size, **decoder)
-            query_dim = self.dec_dim*self.decoder.layer
-            self.attention = Attention(
-                self.encoder.out_dim, query_dim, **attention)
+        # CTC based Decoder
+        if self.joint_ctc:
+            self.ctc_weight =  model_para['optimizer']['joint_ctc']
+            self.ctc_layer = nn.Linear(enc_out_dim,output_dim)
 
-        # Init
-        self.apply(init_weights)
-        for l in range(self.decoder.layer):
-            bias = getattr(self.decoder.layers, 'bias_ih_l{}'.format(l))
-            bias = init_gate(bias)
+        self.init_parameters()
 
-    def set_state(self, prev_state, prev_attn):
-        ''' Setting up all memory states for beam decoding'''
-        self.decoder.set_state(prev_state)
-        self.attention.set_mem(prev_attn)
+    def load_lm(self,decode_lm_weight,decode_lm_path,**kwargs):
+        # Load RNNLM (for inference only)
+        self.rnn_lm = torch.load(decode_lm_path)
+        self.rnn_lm.eval()
+    
+    def clear_att(self):
+        self.attention.reset_enc_mem()
 
-    def create_msg(self):
-        # Messages for user
-        msg = []
-        msg.append('Model spec.| Encoder\'s downsampling rate of time axis is {}.'.format(
-            self.encoder.sample_rate))
-        if self.encoder.vgg:
-            msg.append(
-                '           | VCC Extractor w/ time downsampling rate = 4 in encoder enabled.')
-        if self.enable_ctc:
-            msg.append('           | CTC training on encoder enabled ( lambda = {}).'.format(
-                self.ctc_weight))
-        if self.enable_att:
-            msg.append('           | {} attention decoder enabled ( lambda = {}).'.format(
-                self.attention.mode, 1-self.ctc_weight))
-        return msg
-
-    def forward(self, audio_feature, feature_len, decode_step, tf_rate=0.0, teacher=None,
-                emb_decoder=None, get_dec_state=False):
-        '''
-        Arguments
-            audio_feature - [BxTxD] Acoustic feature with shape 
-            feature_len   - [B]     Length of each sample in a batch
-            decode_step   - [int]   The maximum number of attention decoder steps 
-            tf_rate       - [0,1]   The probability to perform teacher forcing for each step
-            teacher       - [BxLxD] Ground truth for teacher forcing with sentence length L
-            emb_decoder   - [obj]   Introduces the word embedding decoder, different behavior for training/inference
-                                    At training stage, this ONLY affects self-sampling (output remains the same)
-                                    At inference stage, this affects output to become log prob. with distribution fusion
-            get_dec_state - [bool]  If true, return decoder state [BxLxD] for other purpose
-        '''
-        # Init
+    def forward(self, audio_feature, decode_step,tf_rate=0.0,teacher=None,state_len=None):
         bs = audio_feature.shape[0]
-        ctc_output, att_output, att_seq = None, None, None
-        dec_state = [] if get_dec_state else None
-
         # Encode
-        encode_feature, encode_len = self.encoder(audio_feature, feature_len)
+        encode_feature,encode_len = self.encoder(audio_feature,state_len)
+
+        ctc_output = None
+        att_output = None
+        att_maps = None
 
         # CTC based decoding
-        if self.enable_ctc:
-            ctc_output = F.log_softmax(self.ctc_layer(encode_feature), dim=-1)
+        if self.joint_ctc:
+            ctc_output = self.ctc_layer(encode_feature)
 
         # Attention based decoding
-        if self.enable_att:
-            # Init (init char = <SOS>, reset all rnn state and cell)
-            self.decoder.init_state(bs)
-            self.attention.reset_mem()
-            last_char = self.pre_embed(torch.zeros(
-                (bs), dtype=torch.long, device=encode_feature.device))
-            att_seq, output_seq = [], []
-
-            # Preprocess data for teacher forcing
+        if self.joint_att:
             if teacher is not None:
-                teacher = self.embed_drop(self.pre_embed(teacher))
-
+                teacher = self.embed(teacher)
+            
+            # Init (init char = <SOS>, reset all rnn state and cell)
+            self.decoder.init_rnn(encode_feature)
+            self.attention.reset_enc_mem()
+            last_char = self.embed(torch.zeros((bs),dtype=torch.long).to(next(self.decoder.parameters()).device))
+            output_char_seq = []
+            output_att_seq = [[]] * self.attention.num_head
+        
             # Decode
             for t in range(decode_step):
                 # Attend (inputs current state of first layer, encoded features)
-                attn, context = self.attention(
-                    self.decoder.get_query(), encode_feature, encode_len)
-                # Decode (inputs context + embedded last character)
-                decoder_input = torch.cat([last_char, context], dim=-1)
-                cur_char, d_state = self.decoder(decoder_input)
-                # Prepare output as input of next step
+                attention_score,context = self.attention(self.decoder.state_list[0],encode_feature,encode_len)
+                # Spell (inputs context + embedded last character)                
+                decoder_input = torch.cat([last_char,context],dim=-1)
+                dec_out = self.decoder(decoder_input)
+                
+                # To char
+                cur_char = self.char_trans(dec_out)
+
+                # Teacher forcing
                 if (teacher is not None):
-                    # Training stage
-                    if (tf_rate == 1) or (torch.rand(1).item() <= tf_rate):
-                        # teacher forcing
-                        last_char = teacher[:, t, :]
+                    if random.random() <= tf_rate:
+                        last_char = teacher[:,t+1,:]
                     else:
-                        # self-sampling (replace by argmax may be another choice)
-                        with torch.no_grad():
-                            if (emb_decoder is not None) and emb_decoder.apply_fuse:
-                                _, cur_prob = emb_decoder(
-                                    d_state, cur_char, return_loss=False)
-                            else:
-                                cur_prob = cur_char.softmax(dim=-1)
-                            sampled_char = Categorical(cur_prob).sample()
-                        last_char = self.embed_drop(
-                            self.pre_embed(sampled_char))
+                        sampled_char = Categorical(F.softmax(cur_char,dim=-1)).sample()
+                        last_char = self.embed(sampled_char)
                 else:
-                    # Inference stage
-                    if (emb_decoder is not None) and emb_decoder.apply_fuse:
-                        _, cur_char = emb_decoder(
-                            d_state, cur_char, return_loss=False)
-                    # argmax for inference
-                    last_char = self.pre_embed(torch.argmax(cur_char, dim=-1))
-
-                # save output of each step
-                output_seq.append(cur_char)
-                att_seq.append(attn)
-                if get_dec_state:
-                    dec_state.append(d_state)
-
-            att_output = torch.stack(output_seq, dim=1)  # BxTxV
-            att_seq = torch.stack(att_seq, dim=2)       # BxNxDtxT
-            if get_dec_state:
-                dec_state = torch.stack(dec_state, dim=1)
-
-        return ctc_output, encode_len, att_output, att_seq, dec_state
+                    last_char = self.embed(torch.argmax(cur_char,dim=-1))
 
 
-class Decoder(nn.Module):
-    ''' Decoder (a.k.a. Speller in LAS) '''
-    # ToDo:　More elegant way to implement decoder
+                output_char_seq.append(cur_char)
+                for head,a in enumerate(attention_score):
+                    output_att_seq[head].append(a.cpu())
 
-    def __init__(self, input_dim, vocab_size, module, dim, layer, dropout):
-        super(Decoder, self).__init__()
-        self.in_dim = input_dim
+            att_output = torch.stack(output_char_seq,dim=1)
+            att_maps = [torch.stack(att,dim=1) for att in output_att_seq]
+
+        return ctc_output, encode_len, att_output, att_maps
+
+    def init_parameters(self):
+        # Reference : https://github.com/espnet/espnet/blob/master/espnet/nets/e2e_asr_th.py
+        def lecun_normal_init_parameters(module):
+            for p in module.parameters():
+                data = p.data
+                if data.dim() == 1:
+                    # bias
+                    data.zero_()
+                elif data.dim() == 2:
+                    # linear weight
+                    n = data.size(1)
+                    stdv = 1. / math.sqrt(n)
+                    data.normal_(0, stdv)
+                elif data.dim() == 3:
+                    # conv weight
+                    n = data.size(1)
+                    for k in data.size()[2:]:
+                        n *= k
+                    stdv = 1. / math.sqrt(n)
+                    data.normal_(0, stdv)
+                elif data.dim() == 4:
+                    # conv weight
+                    n = data.size(1)
+                    for k in data.size()[2:]:
+                        n *= k
+                    stdv = 1. / math.sqrt(n)
+                    data.normal_(0, stdv)
+                else:
+                    raise NotImplementedError
+
+        def set_forget_bias_to_one(bias):
+            n = bias.size(0)
+            start, end = n // 4, n // 2
+            bias.data[start:end].fill_(1.)
+
+        lecun_normal_init_parameters(self)
+        if self.joint_att:
+            self.embed.weight.data.normal_(0, 1)
+            for i in range(self.decoder.layer):
+                set_forget_bias_to_one(getattr(self.decoder,'layer'+str(i)).bias_ih)
+    
+    def beam_decode(self, audio_feature, decode_step, state_len,decode_beam_size):
+        '''beam decode returns top N hyps for each input sequence'''
+        assert audio_feature.shape[0] == 1
+        assert self.training == False
+        self.decode_beam_size = decode_beam_size
+        ctc_beam_size = int(CTC_BEAM_RATIO * self.decode_beam_size)
+        
+        # Encode
+        encode_feature,encode_len = self.encoder(audio_feature,state_len)
+        if decode_step==0:
+            decode_step = int(encode_len[0])
+        
+        # Init.
+        cur_device = next(self.decoder.parameters()).device
+        ctc_output = None
+        ctc_state = None
+        ctc_prob = 0.0
+        ctc_candidates = []
+        candidates = None
+        att_output = None
+        att_maps = None
+        lm_hidden = None
+
+
+        # CTC based decoding
+        if self.joint_ctc:
+            ctc_output = F.log_softmax(self.ctc_layer(encode_feature),dim=-1)
+            ctc_prefix = CTCPrefixScore(ctc_output)
+            ctc_state = ctc_prefix.init_state()
+
+        # Attention based decoding
+        if self.joint_att:
+            # Store attention map if location-aware
+            store_att = self.attention.mode == 'loc'
+            
+            # Init (init char = <SOS>, reset all rnn state and cell)
+            self.decoder.init_rnn(encode_feature)
+            self.attention.reset_enc_mem()
+            last_char = self.embed(torch.zeros((1),dtype=torch.long).to(cur_device))
+            last_char_idx = torch.LongTensor([[0]])
+            
+            # beam search init
+            final_outputs, prev_top_outputs, next_top_outputs = [], [], []
+            prev_top_outputs.append(Hypothesis(self.decoder.hidden_state, self.embed, output_seq=[], output_scores=[], 
+                                               lm_state=None, ctc_prob=0, ctc_state=ctc_state,
+                                               att_map = None)) # WIERD BUG here if all args. are not passed...
+            # Decode
+            for t in range(decode_step):
+                for prev_output in prev_top_outputs:
+                    
+                    # Attention
+                    self.decoder.hidden_state = prev_output.decoder_state
+                    self.attention.prev_att = None if prev_output.att_map is None else prev_output.att_map.to(cur_device)
+                    attention_score,context = self.attention(self.decoder.state_list[0],encode_feature,encode_len)
+                    decoder_input = torch.cat([prev_output.last_char,context],dim=-1)
+                    dec_out = self.decoder(decoder_input)
+                    cur_char = F.log_softmax(self.char_trans(dec_out), dim=-1)
+
+                    # Perform CTC prefix scoring on limited candidates (else OOM easily)
+                    if self.joint_ctc:
+                        # TODO : Check the performance drop for computing part of candidates only
+                        _, ctc_candidates = cur_char.topk(ctc_beam_size)
+                        candidates = list(ctc_candidates[0].cpu().numpy())
+                        
+                        #ctc_prob, ctc_state = ctc_prefix.full_compute(prev_output.outIndex,prev_output.ctc_state,candidates)
+                        ctc_prob, ctc_state = ctc_prefix.cheap_compute(prev_output.outIndex,prev_output.ctc_state,candidates)
+
+                        # TODO : study why ctc_char (slightly) > 0 sometimes
+                        ctc_char = torch.FloatTensor(ctc_prob - prev_output.ctc_prob).to(cur_device)
+                        
+                        # Combine CTC score and Attention score (focus on candidates)
+                        hack_ctc_char = torch.zeros_like(cur_char).data.fill_(-1000000.0)
+                        for idx,char in enumerate(candidates):
+                            hack_ctc_char[0,char] = ctc_char[idx]
+                        cur_char = (1-self.ctc_weight)*cur_char + self.ctc_weight*hack_ctc_char#ctc_char#
+                        cur_char[0,0] = -10000000.0 # Hack to ignore <sos>
+
+                    # Joint RNN-LM decoding
+                    if self.decode_lm_weight>0:
+                        last_char_idx = prev_output.last_char_idx.to(cur_device)
+                        lm_hidden, lm_output = self.rnn_lm(last_char_idx, [1], prev_output.lm_state)
+                        cur_char += self.decode_lm_weight * F.log_softmax(lm_output.squeeze(1), dim=-1)
+
+                    # Beam search
+                    topv, topi = cur_char.topk(self.decode_beam_size)
+                    prev_att_map =  self.attention.prev_att.clone().detach().cpu() if store_att else None 
+                    final, top = prev_output.addTopk(topi, topv, self.decoder.hidden_state, att_map=prev_att_map,
+                                                     lm_state=lm_hidden,ctc_state=ctc_state,ctc_prob=ctc_prob,
+                                                     ctc_candidates=candidates)
+                    # Move complete hyps. out
+                    if final is not None:
+                        final_outputs.append(final)
+                        if self.decode_beam_size ==1:
+                            return final_outputs
+                    next_top_outputs.extend(top)
+                
+                # Sort for top N beams
+                next_top_outputs.sort(key=lambda o: o.avgScore(), reverse=True)
+                prev_top_outputs = next_top_outputs[:self.decode_beam_size]
+                next_top_outputs = []
+            
+            final_outputs += prev_top_outputs
+            final_outputs.sort(key=lambda o: o.avgScore(), reverse=True)
+        
+        return final_outputs[:self.decode_beam_size]
+
+
+
+# Listener (Encoder)
+#     Encodes acoustic feature to latent representation.
+# Parameters
+#     See config file for more details.
+class Listener(nn.Module):
+    def __init__(self, example_input, enc_type, sample_rate, sample_style, dim, dropout, rnn_cell):
+        super(Listener, self).__init__()
+        # Setting
+        input_dim = example_input.shape[-1]
+        self.enc_type = enc_type
+        self.vgg = False
+        self.dims = [int(v) for v in dim.split('_')]
+        self.sample_rate = [int(v) for v in sample_rate.split('_')]
+        self.dropout = [float(v) for v in dropout.split('_')]
+        self.sample_style = sample_style
+
+        # Parameters checking
+        assert len(self.sample_rate)==len(self.dropout), 'Number of layer mismatch'
+        assert len(self.dropout)==len(self.dims), 'Number of layer mismatch'
+        self.num_layers = len(self.sample_rate)
+        assert self.num_layers>=1,'Listener should have at least 1 layer'
+
+        # Construct Listener
+        if 'VGG' in enc_type:
+            self.vgg = True
+            self.vgg_extractor = VGGExtractor(example_input)
+            input_dim = self.vgg_extractor.out_dim
+
+        for l in range(self.num_layers):
+            out_dim = self.dims[l]
+            sr = self.sample_rate[l]
+            drop = self.dropout[l]
+
+            
+            if "BiRNN" in enc_type:
+                setattr(self, 'layer'+str(l), RNNLayer(input_dim,out_dim, sr, rnn_cell=rnn_cell, dropout_rate=drop,
+                                                       bidir=True,sample_style=sample_style))
+            elif "RNN" in enc_type:
+                setattr(self, 'layer'+str(l), RNNLayer(input_dim,out_dim, sr, rnn_cell=rnn_cell, dropout_rate=drop,
+                                                       bidir=False,sample_style=sample_style))
+            else:
+                raise ValueError('Unsupported Encoder Type: '+enc_type)
+
+            # RNN ouput dim = default output dim x direction x sample rate
+            rnn_out_dim = out_dim*max(1,2*('Bi' in enc_type))*max(1,sr*('concat'== sample_style)) 
+            setattr(self, 'proj'+str(l),nn.Linear(rnn_out_dim,rnn_out_dim))
+            input_dim = rnn_out_dim
+
+    
+    def forward(self,input_x,enc_len):
+        if self.vgg:
+            input_x,enc_len = self.vgg_extractor(input_x,enc_len)
+        for l in range(self.num_layers):
+            input_x, _,enc_len = getattr(self,'layer'+str(l))(input_x,state_len=enc_len, pack_input=True)
+            input_x = torch.tanh(getattr(self,'proj'+str(l))(input_x))
+        return input_x,enc_len
+
+# Speller specified in the paper
+class Speller(nn.Module):
+    def __init__(self, input_dim, dim, layer, rnn_cell, dropout):
+        super(Speller, self).__init__()
+        assert "Cell" in rnn_cell,'Please use Recurrent Cell instead of layer in decoder'
+        # Manually forward through Cells if using RNNCell family
         self.layer = layer
         self.dim = dim
-        self.dropout = dropout
+        self.dropout = nn.Dropout(p=dropout)
+        
+        self.layer0 = getattr(nn,rnn_cell)(input_dim,dim)
+        for i in range(1,layer):
+            setattr(self,'layer'+str(i), getattr(nn,rnn_cell)(dim,dim))
+        
+        self.state_list = []
+        self.cell_list = []
+        
+        #self.layer = RNNLayer(input_dim,dim, 1, rnn_cell=rnn_cell, layers=layer,
+        #                                           dropout_rate=dropout, bidir=False)
+    def init_rnn(self,context):
+        self.state_list = [torch.zeros(context.shape[0],self.dim).to(context.device)]*self.layer
+        self.cell_list = [torch.zeros(context.shape[0],self.dim).to(context.device)]*self.layer
 
-        # Init
-        assert module in ['LSTM', 'GRU'], NotImplementedError
-        self.hidden_state = None
-        self.enable_cell = module == 'LSTM'
+    @property
+    def hidden_state(self):
+        return [s.clone().detach().cpu() for s in self.state_list], [c.clone().detach().cpu() for c in self.cell_list]
 
-        # Modules
-        self.layers = getattr(nn, module)(
-            input_dim, dim, num_layers=layer, dropout=dropout, batch_first=True)
-        self.char_trans = nn.Linear(dim, vocab_size)
-        self.final_dropout = nn.Dropout(dropout)
-
-    def init_state(self, bs):
-        ''' Set all hidden states to zeros '''
-        device = next(self.parameters()).device
-        if self.enable_cell:
-            self.hidden_state = (torch.zeros((self.layer, bs, self.dim), device=device),
-                                 torch.zeros((self.layer, bs, self.dim), device=device))
-        else:
-            self.hidden_state = torch.zeros(
-                (self.layer, bs, self.dim), device=device)
-        return self.get_state()
-
-    def set_state(self, hidden_state):
-        ''' Set all hidden states/cells, for decoding purpose'''
-        device = next(self.parameters()).device
-        if self.enable_cell:
-            self.hidden_state = (hidden_state[0].to(
-                device), hidden_state[1].to(device))
-        else:
-            self.hidden_state = hidden_state.to(device)
-
-    def get_state(self):
-        ''' Return all hidden states/cells, for decoding purpose'''
-        if self.enable_cell:
-            return (self.hidden_state[0].cpu(), self.hidden_state[1].cpu())
-        else:
-            return self.hidden_state.cpu()
-
-    def get_query(self):
-        ''' Return state of all layers as query for attention '''
-        if self.enable_cell:
-            return self.hidden_state[0].transpose(0, 1).reshape(-1, self.dim*self.layer)
-        else:
-            return self.hidden_state.transpose(0, 1).reshape(-1, self.dim*self.layer)
-
-    def forward(self, x):
-        ''' Decode and transform into vocab '''
-        if not self.training:
-            self.layers.flatten_parameters()
-        x, self.hidden_state = self.layers(x.unsqueeze(1), self.hidden_state)
-        x = x.squeeze(1)
-        char = self.char_trans(self.final_dropout(x))
-        return char, x
+    @hidden_state.setter
+    def hidden_state(self, state): # state is a tuple of two list
+        device = self.state_list[0].device
+        self.state_list = [s.to(device) for s in state[0]]
+        self.cell_list = [c.to(device) for c in state[1]]
+    
+    def forward(self, input_context):
+        self.state_list[0],self.cell_list[0] = self.layer0(self.dropout(input_context),(self.state_list[0],self.cell_list[0]))
+        for l in range(1,self.layer):
+            self.state_list[l],self.cell_list[l] = getattr(self,'layer'+str(l))(self.state_list[l-1],(self.dropout(self.state_list[l]),self.cell_list[l]))
+        
+        return self.state_list[-1]
 
 
-class Attention(nn.Module):
-    ''' Attention mechanism
-        please refer to http://www.aclweb.org/anthology/D15-1166 section 3.1 for more details about Attention implementation
-        Input : Decoder state                      with shape [batch size, decoder hidden dimension]
-                Compressed feature from Encoder    with shape [batch size, T, encoder feature dimension]
-        Output: Attention score                    with shape [batch size, num head, T (attention score of each time step)]
-                Context vector                     with shape [batch size, encoder feature dimension]
-                (i.e. weighted (by attention score) sum of all timesteps T's feature) '''
 
-    def __init__(self, v_dim, q_dim, mode, dim, num_head, temperature, v_proj,
-                 loc_kernel_size, loc_kernel_num):
-        super(Attention, self).__init__()
+# Attention mechanism
+# Currently only 'dot' is implemented
+# please refer to http://www.aclweb.org/anthology/D15-1166 section 3.1 for more details about Attention implementation
+# Input : Decoder state                      with shape [batch size, decoder hidden dimension]
+#         Compressed feature from Listner    with shape [batch size, T, listener feature dimension]
+# Output: Attention score                    with shape [batch size, T (attention score of each time step)]
+#         Context vector                     with shape [batch size, listener feature dimension]
+#         (i.e. weighted (by attention score) sum of all timesteps T's feature)
 
-        # Setup
-        self.v_dim = v_dim
-        self.dim = dim
-        self.mode = mode.lower()
+class Attention(nn.Module):  
+    def __init__(self, in_dim, dec_dim, att_mode, dim, proj, num_head):
+        super(Attention,self).__init__()
+
+        self.mode = att_mode.lower()
+        
         self.num_head = num_head
+        self.softmax = nn.Softmax(dim=-1)
 
         # Linear proj. before attention
-        self.proj_q = nn.Linear(q_dim, dim*num_head)
-        self.proj_k = nn.Linear(v_dim, dim*num_head)
-        self.v_proj = v_proj
-        if v_proj:
-            self.proj_v = nn.Linear(v_dim, v_dim*num_head)
-
-        # Attention
-        if self.mode == 'dot':
-            self.att_layer = ScaleDotAttention(temperature, self.num_head)
-        elif self.mode == 'loc':
-            self.att_layer = LocationAwareAttention(
-                loc_kernel_size, loc_kernel_num, dim, num_head, temperature)
-        else:
-            raise NotImplementedError
+        self.proj = proj
+        if proj:
+            self.proj_dim  = dim
+            self.phi = nn.Linear(dec_dim,dim*num_head,bias=False)
+            self.psi = nn.Linear(in_dim,dim)
 
         # Layer for merging MHA
         if self.num_head > 1:
-            self.merge_head = nn.Linear(v_dim*num_head, v_dim)
+            self.merge_head = nn.Linear(in_dim*num_head,in_dim)
 
-        # Stored feature
-        self.key = None
-        self.value = None
-        self.mask = None
+        # Location-aware Attetion
+        if self.mode == 'loc':
+            assert self.proj,"Location-awared attetion requires proj==True"
+            assert self.num_head==1
+            # TODO : Move this to config
+            C = 10
+            K = 100
+            self.prev_att  = None
+            self.loc_conv = nn.Conv1d(1, C, kernel_size=2*K+1, padding=K, bias=False)
+            self.loc_proj = nn.Linear(C,dim,bias=False)
+            self.gen_energy = nn.Linear(dim, 1)
+        
+        self.comp_listener_feature = None
+    
+    def reset_enc_mem(self):
+        self.comp_listener_feature = None
+        self.state_mask = None
+        if self.mode == 'loc':
+            self.prev_att = None
 
-    def reset_mem(self):
-        self.key = None
-        self.value = None
-        self.mask = None
-        self.att_layer.reset_mem()
-
-    def set_mem(self, prev_attn):
-        self.att_layer.set_mem(prev_attn)
-
-    def forward(self, dec_state, enc_feat, enc_len):
-
-        # Preprecessing
-        bs, ts, _ = enc_feat.shape
-        query = torch.tanh(self.proj_q(dec_state))
-        query = query.view(bs, self.num_head, self.dim).view(
-            bs*self.num_head, self.dim)  # BNxD
-
-        if self.key is None:
+    def forward(self, decoder_state, listener_feature, state_len, scale=2.0):
+        # Store enc state to save time
+        if self.comp_listener_feature is None:
             # Maskout attention score for padded states
-            self.att_layer.compute_mask(enc_feat, enc_len.to(enc_feat.device))
+            # NOTE: mask MUST have all input > 0 
+            self.state_mask = np.zeros((listener_feature.shape[0],listener_feature.shape[1]))
+            for idx,sl in enumerate(state_len):
+                self.state_mask[idx,sl:] = 1
+            self.state_mask = torch.from_numpy(self.state_mask).type(torch.ByteTensor).to(decoder_state.device)
+            self.comp_listener_feature =  torch.tanh(self.psi(listener_feature)) if self.proj else listener_feature
 
-            # Store enc state to lower computational cost
-            self.key = torch.tanh(self.proj_k(enc_feat))
-            self.value = torch.tanh(self.proj_v(
-                enc_feat)) if self.v_proj else enc_feat  # BxTxN
-
-            if self.num_head > 1:
-                self.key = self.key.view(bs, ts, self.num_head, self.dim).permute(
-                    0, 2, 1, 3)  # BxNxTxD
-                self.key = self.key.contiguous().view(bs*self.num_head, ts, self.dim)  # BNxTxD
-                if self.v_proj:
-                    self.value = self.value.view(
-                        bs, ts, self.num_head, self.v_dim).permute(0, 2, 1, 3)  # BxNxTxD
-                    self.value = self.value.contiguous().view(
-                        bs*self.num_head, ts, self.v_dim)  # BNxTxD
-                else:
-                    self.value = self.value.repeat(self.num_head, 1, 1)
-
-        # Calculate attention
-        context, attn = self.att_layer(query, self.key, self.value)
-        if self.num_head > 1:
-            context = context.view(
-                bs, self.num_head*self.v_dim)    # BNxD  -> BxND
-            context = self.merge_head(context)  # BxD
-
-        return attn, context
-
-
-class Encoder(nn.Module):
-    ''' Encoder (a.k.a. Listener in LAS)
-        Encodes acoustic feature to latent representation, see config file for more details.'''
-
-    def __init__(self, input_size, vgg, module, bidirection, dim, dropout, layer_norm, proj, sample_rate, sample_style):
-        super(Encoder, self).__init__()
-
-        # Hyper-parameters checking
-        self.vgg = vgg
-        self.sample_rate = 1
-        assert len(sample_rate) == len(dropout), 'Number of layer mismatch'
-        assert len(dropout) == len(dim), 'Number of layer mismatch'
-        num_layers = len(dim)
-        assert num_layers >= 1, 'Encoder should have at least 1 layer'
-
-        # Construct model
-        module_list = []
-        input_dim = input_size
-
-        if vgg:
-            vgg_extractor = VGGExtractor(input_size)
-            module_list.append(vgg_extractor)
-            input_dim = vgg_extractor.out_dim
-            self.sample_rate = self.sample_rate*4
-
-        if module in ['LSTM', 'GRU']:
-            for l in range(num_layers):
-                module_list.append(RNNLayer(input_dim, module, dim[l], bidirection, dropout[l], layer_norm[l],
-                                            sample_rate[l], sample_style, proj[l]))
-                input_dim = module_list[-1].out_dim
-                self.sample_rate = self.sample_rate*sample_rate[l]
+        if self.proj:
+            comp_decoder_state =  torch.tanh(self.phi(decoder_state))
         else:
-            raise NotImplementedError
+            comp_decoder_state = decoder_state
 
-        self.in_dim = input_size
-        self.out_dim = input_dim
-        self.layers = nn.ModuleList(module_list)
+        if self.mode == 'dot':
+            if self.num_head == 1:
+                energy = torch.bmm(self.comp_listener_feature,comp_decoder_state.unsqueeze(2)).squeeze(dim=2)
+                energy.masked_fill_(self.state_mask,-float("Inf"))
+                #torch.bmm(comp_decoder_state.unsqueeze(1),self.comp_listener_feature.transpose(1, 2)).squeeze(dim=1)*self.state_mask
+                attention_score = [self.softmax(energy*scale)]
+                context = torch.bmm(attention_score[0].unsqueeze(1),listener_feature).squeeze(1)
+                #torch.sum(listener_feature*attention_score[0].unsqueeze(2).repeat(1,1,listener_feature.size(2)),dim=1)
+            else:
+                attention_score =  [ self.softmax(torch.bmm(self.comp_listener_feature,att_querry.unsqueeze(2)).squeeze(dim=2))\
+                                    for att_querry in torch.split(comp_decoder_state, self.preprocess_mlp_dim, dim=-1)]
+                for idx in range(self.num_head):
+                    attention_score[idx].masked_fill_(self.state_mask,-float("inf"))
+                    attention_score[idx] = self.softmax(attention_score[idx])
+                projected_src = [torch.bmm(att_s.unsqueeze(1),listener_feature).squeeze(1) \
+                                for att_s in attention_score]
+                context = self.merge_head(torch.cat(projected_src,dim=-1))
+        elif self.mode == 'loc':
+            if self.prev_att is None:
+                # Uniformly init attention
+                bs,ts,_ = self.comp_listener_feature.shape
+                self.prev_att = torch.zeros((bs,1,ts)).to(self.comp_listener_feature.device)
+                for idx,sl in enumerate(state_len):
+                    self.prev_att[idx,:,:sl] = 1.0/sl
 
-    def forward(self, input_x, enc_len):
-        for _, layer in enumerate(self.layers):
-            input_x, enc_len = layer(input_x, enc_len)
-        return input_x, enc_len
+            comp_decoder_state = comp_decoder_state.unsqueeze(1)
+            comp_location_info = torch.tanh(self.loc_proj(self.loc_conv(self.prev_att).transpose(1,2)))
+            energy = self.gen_energy(torch.tanh(self.comp_listener_feature+ comp_decoder_state+comp_location_info)).squeeze(2)
+            energy.masked_fill_(self.state_mask,-float("inf"))
+            attention_score = [self.softmax(energy*scale)]
+            self.prev_att = attention_score[0].unsqueeze(1)
+            context = torch.bmm(attention_score[0].unsqueeze(1),listener_feature).squeeze(1)
+        else:
+            # TODO: other attention implementations
+            raise ValueError('Unsupported Attention Mode: '+self.mode)
+        
+        return attention_score,context
+
+
+# RNN layer
+class RNNLayer(nn.Module):
+    def __init__(self,in_dim,out_dim, sample_rate, sample_style='drop', layers = 1,
+                 rnn_cell='LSTM', dropout_rate=0.0, bidir=True):
+        super(RNNLayer, self).__init__()
+        self.sample_style = sample_style
+        self.sample_rate = sample_rate
+        
+        self.layer = getattr(nn,rnn_cell.upper())(in_dim,out_dim, bidirectional=bidir, num_layers=layers,
+                               dropout=dropout_rate,batch_first=True)
+    
+    def forward(self,input_x,state=None,state_len=None, pack_input=False):
+        # Forward RNN
+        if pack_input:
+            assert state_len is not None, "Please specify seq len for pack_padded_sequence."
+            input_x = pack_padded_sequence(input_x, state_len, batch_first=True)
+        output,hidden = self.layer(input_x,state)
+        if pack_input:
+            output,state_len = pad_packed_sequence(output,batch_first=True)
+            state_len = state_len.tolist()
+
+        # Perform Downsampling
+        if self.sample_rate > 1:
+            batch_size,timestep,feature_dim = output.shape
+
+            if self.sample_style =='drop':
+                output = output[:,::self.sample_rate,:]
+            elif self.sample_style == 'concat':
+                if timestep%self.sample_rate != 0: output = output[:,:-(timestep%self.sample_rate),:]
+                output = output.contiguous().view(batch_size,int(timestep/self.sample_rate),feature_dim*self.sample_rate)
+            else:
+                raise ValueError('Unsupported Sample Style: '+self.sample_style)
+            if state_len is not None: state_len=[int(s/self.sample_rate) for s in state_len]
+
+        if state_len is not None:
+            return output,hidden,state_len
+        return output,hidden
+
+
+# VGG Extractor
+# See https://arxiv.org/pdf/1706.02737.pdf for detail
+# If VGGextractor is enabled, delta feature should be stack over channel.
+class VGGExtractor(nn.Module):
+    def __init__(self,example_input):
+        super(VGGExtractor, self).__init__()
+        in_channel,freq_dim,out_dim = self.check_dim(example_input)
+        self.in_channel = in_channel
+        self.freq_dim = freq_dim
+        self.out_dim = out_dim
+
+        self.conv1 = nn.Conv2d(in_channel, 64, 3, stride=1, padding=1)
+        self.conv2 = nn.Conv2d(    64, 64, 3, stride=1, padding=1)
+        self.pool1 = nn.MaxPool2d(2, stride=2) # Half-time dimension
+        self.conv3 = nn.Conv2d(    64,128, 3, stride=1, padding=1)
+        self.conv4 = nn.Conv2d(   128,128, 3, stride=1, padding=1)
+        self.pool2 = nn.MaxPool2d(2, stride=2) # Half-time dimension
+
+    def check_dim(self,example_input):
+        d = example_input.shape[-1]
+        if d%13 == 0:
+            # MFCC feature
+            return int(d/13),13,(13//4)*128
+        elif d%40 == 0:
+            # Fbank feature
+            return int(d/40),40,(40//4)*128
+        else:
+            raise ValueError('Acoustic feature dimension for VGG should be 13/26/39(MFCC) or 40/80/120(Fbank) but got '+d)
+
+    def view_input(self,feature,xlen):
+        # drop time
+        xlen = [x//4 for x in xlen]
+        if feature.shape[1]%4 != 0:
+            feature = feature[:,:-(feature.shape[1]%4),:].contiguous()
+        bs,ts,ds = feature.shape
+        # reshape
+        feature = feature.view(bs,ts,self.in_channel,self.freq_dim)
+        feature = feature.transpose(1,2)
+
+        return feature,xlen
+
+    def forward(self,feature,xlen):
+        # Feature shape BSxTxD -> BS x CH(num of delta) x T x D(acoustic feature dim)
+        feature,xlen = self.view_input(feature,xlen)
+        feature = F.relu(self.conv1(feature))
+        feature = F.relu(self.conv2(feature))
+        feature = self.pool1(feature) # BSx64xT/2xD/2
+        feature = F.relu(self.conv3(feature))
+        feature = F.relu(self.conv4(feature))
+        feature = self.pool2(feature) # BSx128xT/4xD/4
+        # BSx128xT/4xD/4 -> BSxT/4x128xD/4
+        feature = feature.transpose(1,2)
+        #  BS x T/4 x 128 x D/4 -> BS x T/4 x 32D
+        feature = feature.contiguous().view(feature.shape[0],feature.shape[1],self.out_dim)
+        return feature,xlen
+

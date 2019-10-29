@@ -295,12 +295,20 @@ class Tester(Solver):
     ''' Handler for complete inference progress'''
     def __init__(self,config,paras):
         super(Tester, self).__init__(config,paras)
-        self.verbose('During beam decoding, batch size is set to 1, please speed up with --njobs.')
         self.njobs = self.paras.njobs
         self.decode_step_ratio = config['solver']['max_decode_step_ratio']
         
         self.decode_file = "_".join(['decode','beam',str(self.config['solver']['decode_beam_size']),
                                      'len',str(self.config['solver']['max_decode_step_ratio'])])
+
+        # MWER
+        self.mwer =True
+        if self.mwer:
+            self.pred_path = os.path.join(self.ckpdir,self.decode_file)
+            if not os.path.exists(self.pred_path):
+                os.makedirs(self.pred_path)
+                os.makedirs(os.path.join(self.pred_path,'data'))
+
 
     def load_data(self):
         self.verbose('Loading testing data '+str(self.config['solver']['test_set'])\
@@ -336,22 +344,29 @@ class Tester(Solver):
         self.asr_model.clear_att()
         self.asr_model = self.asr_model.to(self.device)
         self.verbose('Checking models performance on dev set '+str(self.config['solver']['dev_set'])+'...')
-        self.valid()
-        self.asr_model = self.asr_model.to('cpu') # move origin model to cpu, clone it to GPU for each thread
+        self.greedy_decode('dev')
 
     def exec(self):
         '''Perform inference step with beam search decoding.'''
         test_cer = 0.0
         self.decode_beam_size = self.config['solver']['decode_beam_size']
-        self.verbose('Start decoding with beam search, beam size = '+str(self.config['solver']['decode_beam_size']))
-        self.verbose('Number of utts to decode : {}, decoding with {} threads.'.format(len(self.test_set),self.njobs))
-        ## self.test_set = [(x,y) for (x,y) in self.test_set][::10]
-        _ = Parallel(n_jobs=self.njobs)(delayed(self.beam_decode)(x[0],y[0].tolist()[0]) for x,y in tqdm(self.test_set))
-        
-        self.verbose('Decode done, best results at {}.'.format(str(os.path.join(self.ckpdir,self.decode_file+'.txt'))))
-        
-        self.verbose('Top {} results at {}.'.format(self.config['solver']['decode_beam_size'],
+        if self.decode_beam_size > 1:
+            self.asr_model = self.asr_model.to('cpu') # move origin model to cpu, clone it to GPU for each thread
+            self.verbose('Start decoding with beam search, beam size = '+str(self.config['solver']['decode_beam_size']))
+            self.verbose('During beam decoding, batch size is set to 1, please speed up with --njobs.')
+            #self.test_set = [(x[0].clone(),y[0].clone()) for x,y in self.test_set]
+            self.verbose('Number of utts to decode : {}, decoding with {} threads.'.format(len(self.test_set),self.njobs))
+            _ = Parallel(n_jobs=self.njobs)(delayed(self.beam_decode)(idx,x[0],y[0].tolist()[0]) for idx,(x,y) in enumerate(tqdm(self.test_set)))
+            
+            self.verbose('Decode done, best results at {}.'.format(str(os.path.join(self.ckpdir,self.decode_file+'.txt'))))
+            
+            self.verbose('Top {} results at {}.'.format(self.config['solver']['decode_beam_size'],
                                                     str(os.path.join(self.ckpdir,self.decode_file+'_nbest.txt'))))
+        elif self.decode_beam_size ==1:
+            self.verbose('Start decoding with greedy search, batch size = '+str(self.config['solver']['dev_batch_size']))
+            self.verbose('Number of mini batches to decode : {}.'.format(len(self.test_set)))
+            self.greedy_decode('test')
+            self.verbose('Decode done, best results at {}.'.format(str(os.path.join(self.ckpdir,self.decode_file+'.txt'))))
         
     def write_hyp(self,hyps,y):
         '''Record decoding results'''
@@ -367,7 +382,7 @@ class Tester(Solver):
                 f.write(gt+'\t'+best_hyp+'\n')
         
 
-    def beam_decode(self,x,y):
+    def beam_decode(self,idx,x,y):
         '''Perform beam decoding with end-to-end ASR'''
         # Prepare data
         x = x.to(device = self.device,dtype=torch.float32)
@@ -379,23 +394,57 @@ class Tester(Solver):
             max_decode_step =  int(np.ceil(state_len[0]*self.decode_step_ratio))
             model = copy.deepcopy(self.asr_model).to(self.device)
             hyps = model.beam_decode(x, max_decode_step, state_len, self.decode_beam_size)
+
+            ### MWER
+            if self.mwer:
+                feats = torch.cat([x for hyp in hyps],dim=0)
+                max_len = max([len(hyp.outIndex) for hyp in hyps])
+                labels = [[0]+hyp.outIndex+[0]*(max_len-len(hyp.outIndex)) for hyp in hyps]
+                labels = torch.LongTensor(labels).to(device = self.device)
+                _,_,att_out,_ = model(feats,max_len,tf_rate=1.0,teacher=labels,state_len=[x.shape[1]]*len(feats))
+                att_out = F.softmax(att_out,dim=-1).cpu().numpy()
+                with open(os.path.join(self.pred_path,'data.csv'),'a') as f:
+                    for n,output in enumerate(att_out):
+                        eos_pos = np.where(np.argmax(output,axis=-1)==1)[0]
+                        if len(eos_pos)>0:
+                            output = output[:eos_pos[0]+1]
+                        f_name = str(idx)+'_'+str(n)+'.npy'
+                        f.write("{},{}\n".format(f_name,'_'.join([str(c) for c in y[1:]])))
+                        np.save(str(os.path.join(self.pred_path,'data',f_name)),output)
+
         del model
         
-        self.write_hyp(hyps,y)
+        if not self.mwer:
+            self.write_hyp(hyps,y)
         del hyps
         
         return 1
 
     
-    def valid(self):
+    def greedy_decode(self,split):
         '''Perform validation step (!!!NOTE!!! greedy decoding on Attention decoder only)'''
+        # TODO : Add rnnlm & ctc decode to greedy.
         val_cer = 0.0
         val_len = 0    
         all_pred,all_true = [],[]
         ctc_results = []
+
+        ds = self.dev_set if split =='dev' else self.test_set
+
+        # for MWER only
+        tf_data = False
+        if self.mwer:
+            print("TF={}".format(tf_data))
+            idx = 0 
+            mwer_dir = str(self.pred_path)+'_dev' if split =='dev' else self.pred_path
+            if not os.path.exists(mwer_dir):
+                os.makedirs(mwer_dir)
+                os.makedirs(mwer_dir+'/data')
+            f = open(os.path.join(mwer_dir,'data.csv'),'a')
+        # Origin start
         with torch.no_grad():
-            for cur_b,(x,y) in enumerate(self.dev_set):
-                self.progress(' '.join(['Valid step - (',str(cur_b),'/',str(len(self.dev_set)),')']))
+            for cur_b,(x,y) in enumerate(tqdm(ds)):
+                #self.progress(' '.join(['Decode step - (',str(cur_b),'/',str(len(ds)),')']))
 
                 # Prepare data
                 if len(x.shape)==4: x = x.squeeze(0)
@@ -405,11 +454,31 @@ class Tester(Solver):
                 state_len = torch.sum(torch.sum(x.cpu(),dim=-1)!=0,dim=-1)
                 state_len = [int(sl) for sl in state_len]
                 ans_len = int(torch.max(torch.sum(y!=0,dim=-1)))
-
+                
                 # Forward
-                ctc_pred, state_len, att_pred, att_maps = self.asr_model(x, ans_len+VAL_STEP,state_len=state_len)
+                if self.mwer and tf_data :
+                    ctc_pred, state_len, att_pred, att_maps = self.asr_model(x, ans_len,tf_rate=1,teacher=y,state_len=state_len)
+                else:
+                    decode_len = ans_len+VAL_STEP if split =='dev' else \
+                              int(np.ceil(max(state_len)*self.decode_step_ratio))
+                    ctc_pred, state_len, att_pred, att_maps = self.asr_model(x, decode_len,state_len=state_len)
                 ctc_pred = torch.argmax(ctc_pred,dim=-1).cpu() if ctc_pred is not None else None
                 ctc_results.append(ctc_pred)
+
+                ### MWER
+                if self.mwer:
+                    att_out = F.softmax(att_pred,dim=-1).cpu().numpy()
+                    
+                    for output,ans in zip(att_out,y):
+                        answer = ans.tolist()
+                        answer = answer[1:answer.index(1)]+[1]
+                        eos_pos = np.where(np.argmax(output,axis=-1)==1)[0]
+                        if len(eos_pos)>0:
+                            output = output[:eos_pos[0]+1]
+                        f_name = str(idx)+'.npy'
+                        f.write("{},{}\n".format(f_name,'_'.join([str(c) for c in answer])))
+                        np.save(str(os.path.join(mwer_dir,'data',f_name)),output)
+                        idx+=1
 
                 # Result
                 label = y[:,1:ans_len+1].contiguous()
@@ -418,17 +487,31 @@ class Tester(Solver):
                 all_true += t2
                 val_cer += cal_cer(att_pred,label,mapper=self.mapper)*int(x.shape[0])
                 val_len += int(x.shape[0])
+            
+        if split =='dev':
+            # Dump model score to ensure model is corrected
+            decode_path = os.path.join(self.ckpdir,'dev_att_decode.txt')
+            er_msg = 'Validation Error Rate of Current model : {:.4f}      '.format(val_cer/val_len)
+            save_msg = 'See {} for validation results.'.format(decode_path)
+        else:
+            decode_path = os.path.join(self.ckpdir,self.decode_file+'.txt')
+            er_msg = 'Test Error Rate: {:.4f}      '.format(val_cer/val_len)
+            save_msg = 'See {} for decoding results.'.format(decode_path)
+            
+        self.verbose(er_msg) 
+        self.verbose(save_msg)
         
-        
-        # Dump model score to ensure model is corrected
-        self.verbose('Validation Error Rate of Current model : {:.4f}      '.format(val_cer/val_len)) 
-        self.verbose('See {} for validation results.'.format(os.path.join(self.ckpdir,'dev_att_decode.txt'))) 
-        with open(os.path.join(self.ckpdir,'dev_att_decode.txt'),'w') as f:
+        ## MWER
+        if self.mwer:
+            f.close()
+            return 0
+
+        with open(decode_path,'w') as f:
             for hyp,gt in zip(all_pred,all_true):
                 f.write(gt.lstrip()+'\t'+hyp.lstrip()+'\n')
         
         # Also dump CTC result if available
-        if ctc_results[0] is not None:
+        if ctc_results[0] is not None and split =='dev':
             ctc_results = [i for ins in ctc_results for i in ins]
             ctc_text = []
             for pred in ctc_results:
@@ -511,7 +594,7 @@ class RNNLM_Trainer(Solver):
     def valid(self):
         self.rnnlm.eval()
 
-        print_loss = 0.0
+        dev_ppx = 0.0
         dev_size = 0 
 
         for cur_b,y in enumerate(self.dev_set):
@@ -521,11 +604,10 @@ class RNNLM_Trainer(Solver):
             ans_len = torch.sum(y!=0,dim=-1)
             _, prob = self.rnnlm(y[:,:-1],ans_len)
             loss = F.cross_entropy(prob.view(-1,prob.shape[-1]), y[:,1:].contiguous().view(-1), ignore_index=0)
-            print_loss += loss.clone().detach() * y.shape[0]
+            dev_ppx += torch.exp(loss.cpu()).item()*y.shape[0]
             dev_size += y.shape[0]
 
-        print_loss /= dev_size
-        dev_ppx = torch.exp(print_loss).cpu().item()
+        dev_ppx /= dev_size
         self.log.add_scalars('perplexity',{'dev':dev_ppx},self.step)
         
         # Store model with the best perplexity
