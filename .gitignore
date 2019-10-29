@@ -121,3 +121,6 @@ save
 TODO
 checkpoint
 run.sh
+
+# swap file
+*.swp
