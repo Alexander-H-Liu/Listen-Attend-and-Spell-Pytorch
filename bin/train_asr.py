@@ -118,10 +118,10 @@ class Solver(BaseSolver):
                                                  txt.to_sparse().values().to(device='cpu', dtype=torch.int32),
                                                  [ctc_output.shape[1]] *
                                                  len(ctc_output),
-                                                 txt_len.cpu().tolist())
+                                                 (txt_len-1).cpu().tolist())
                     else:
                         ctc_loss = self.ctc_loss(ctc_output.transpose(
-                            0, 1), txt, encode_len, txt_len)
+                            0, 1), txt, encode_len, txt_len-1)
                     total_loss += ctc_loss*self.model.ctc_weight
 
                 if att_output is not None:
