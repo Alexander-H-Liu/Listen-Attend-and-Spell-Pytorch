@@ -8,3 +8,4 @@ tb-nightly
 torch>=1.2.0
 torchaudio
 matplotlib
+editdistance
