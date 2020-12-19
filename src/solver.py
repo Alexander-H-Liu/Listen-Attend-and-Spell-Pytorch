@@ -188,7 +188,7 @@ class BaseSolver():
             self.model, self.optimizer.opt = self.amp_lib.initialize(
                 self.model, self.optimizer.opt, opt_level='O1')
 
-    # ----------------------------------- Abtract Methods ------------------------------------------ #
+    # ----------------------------------- Abstract Methods ------------------------------------------ #
     @abc.abstractmethod
     def load_data(self):
         '''
